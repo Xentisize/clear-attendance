@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { createClient } from "@/utils/supabase/client";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { createClient } from '@/utils/supabase/client';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 export default function AdminDashboard() {
 	const [user, setUser] = useState<any>(null);
@@ -17,21 +17,21 @@ export default function AdminDashboard() {
 			} = await supabase.auth.getSession();
 
 			if (!session) {
-				router.push("/admin/login");
+				router.push('/admin/login');
 				return;
 			}
 
 			// Check if user is admin
 			const { data: adminData, error: adminError } = await supabase
-				.from("admins")
-				.select("id, email, name")
-				.eq("email", session.user.email)
+				.from('admins')
+				.select('id, email, name')
+				.eq('email', session.user.email)
 				.single();
 
 			if (adminError || !adminData) {
 				// Sign out if not admin
 				await supabase.auth.signOut();
-				router.push("/admin/login");
+				router.push('/admin/login');
 				return;
 			}
 
@@ -48,7 +48,7 @@ export default function AdminDashboard() {
 	const handleLogout = async () => {
 		const supabase = await createClient();
 		await supabase.auth.signOut();
-		router.push("/admin/login");
+		router.push('/admin/login');
 		router.refresh();
 	};
 
@@ -81,6 +81,12 @@ export default function AdminDashboard() {
 									className="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
 								>
 									Participants
+								</a>
+								<a
+									href="/admin/printer"
+									className="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
+								>
+									Printer
 								</a>
 							</div>
 						</div>
@@ -121,6 +127,12 @@ export default function AdminDashboard() {
 										className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
 									>
 										Manage Participants
+									</a>
+									<a
+										href="/admin/printer"
+										className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+									>
+										Manage Printer
 									</a>
 								</div>
 							</div>
