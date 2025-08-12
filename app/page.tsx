@@ -1,7 +1,8 @@
 'use client';
 
+import ParticipantCard from '@/components/ParticipantCard';
+import Navigation from '@/components/navigation';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
 	Card,
@@ -12,10 +13,9 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
-import printerService from '@/utils/printerService';
 import { createClient } from '@/utils/supabase/client';
 import { BrowserMultiFormatReader, NotFoundException } from '@zxing/library';
-import { QRCodeSVG } from 'qrcode.react';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 type Participant = {
@@ -28,6 +28,7 @@ type Participant = {
 	post: string;
 	department: string;
 	attended: boolean;
+	created_at: string;
 };
 
 // Helper function to validate UUID format
@@ -43,11 +44,12 @@ export default function Home() {
 	const [participant, setParticipant] = useState<Participant | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [printing, setPrinting] = useState(false);
 	const [searchInput, setSearchInput] = useState('');
+	const [authLoading, setAuthLoading] = useState(true);
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
+	const router = useRouter();
 
 	// Initialize QR code reader
 	useEffect(() => {
@@ -58,6 +60,39 @@ export default function Home() {
 			}
 		};
 	}, []);
+
+	// Check authentication
+	useEffect(() => {
+		const checkAuth = async () => {
+			const supabase = await createClient();
+			const {
+				data: { session },
+			} = await supabase.auth.getSession();
+
+			if (!session) {
+				router.push('/admin/login');
+				return;
+			}
+
+			// Check if user is admin
+			const { data: adminData, error: adminError } = await supabase
+				.from('admins')
+				.select('id, email, name')
+				.eq('email', session.user.email)
+				.single();
+
+			if (adminError || !adminData) {
+				// Sign out if not admin
+				await supabase.auth.signOut();
+				router.push('/admin/login');
+				return;
+			}
+
+			setAuthLoading(false);
+		};
+
+		checkAuth();
+	}, [router]);
 
 	const stopCamera = useCallback(() => {
 		if (codeReaderRef.current) {
@@ -198,50 +233,23 @@ export default function Home() {
 		}
 	};
 
-	const handlePrint = async () => {
-		if (!participant) return;
-		setPrinting(true);
-		try {
-			const supabase = await createClient();
-
-			// Mark participant as attended
-			const { error: updateError } = await supabase
-				.from('participants')
-				.update({ attended: true })
-				.eq('id', participant.id);
-
-			if (updateError) throw updateError;
-
-			// Try to print the label
-			try {
-				// biome-ignore lint/suspicious/noExplicitAny: Printer service has dynamic typing
-				await (printerService as any).printParticipantLabel(participant);
-				alert('Label printed successfully!');
-			} catch (printError) {
-				console.error('Print error:', printError);
-				alert(
-					`Attendance marked successfully, but printing failed: ${printError instanceof Error ? printError.message : 'Unknown error'}. Please ensure the printer service is running and a printer is connected.`,
-				);
-			}
-
-			// Refresh participant data to show updated attendance status
-			await fetchParticipant(participant.id);
-		} catch (err: unknown) {
-			const errorMessage =
-				err instanceof Error
-					? err.message
-					: 'An error occurred while processing the request.';
-			setError(errorMessage);
-		} finally {
-			setPrinting(false);
-		}
-	};
-
 	const resetScan = () => {
 		setScanResult(null);
 		setParticipant(null);
 		setError(null);
 	};
+
+	const handleParticipantUpdate = (updatedParticipant: Participant) => {
+		setParticipant(updatedParticipant);
+	};
+
+	if (authLoading) {
+		return (
+			<div className="min-h-screen flex items-center justify-center">
+				<div className="animate-spin rounded-full h-32 w-32 border-b-2 border-gray-900"></div>
+			</div>
+		);
+	}
 
 	return (
 		<div className="min-h-screen bg-gray-50">
@@ -370,105 +378,13 @@ export default function Home() {
 					)}
 
 					{participant && (
-						<Card>
-							<CardHeader>
-								<CardTitle className="text-center">
-									Participant Details
-								</CardTitle>
-							</CardHeader>
-							<CardContent>
-								<div className="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-2">
-									<div className="space-y-4">
-										<div className="space-y-2">
-											<p className="text-sm font-medium text-gray-500">Name</p>
-											<p className="text-sm text-gray-900">
-												{participant.title} {participant.first_name}{' '}
-												{participant.last_name}
-											</p>
-										</div>
-										<div className="space-y-2">
-											<p className="text-sm font-medium text-gray-500">
-												Staff ID
-											</p>
-											<p className="text-sm text-gray-900">
-												{participant.staff_id}
-											</p>
-										</div>
-										<div className="space-y-2">
-											<p className="text-sm font-medium text-gray-500">Email</p>
-											<p className="text-sm text-gray-900">
-												{participant.email || 'N/A'}
-											</p>
-										</div>
-										<div className="space-y-2">
-											<p className="text-sm font-medium text-gray-500">Post</p>
-											<p className="text-sm text-gray-900">
-												{participant.post || 'N/A'}
-											</p>
-										</div>
-										<div className="space-y-2">
-											<p className="text-sm font-medium text-gray-500">
-												Department
-											</p>
-											<p className="text-sm text-gray-900">
-												{participant.department || 'N/A'}
-											</p>
-										</div>
-										<div className="space-y-2">
-											<p className="text-sm font-medium text-gray-500">
-												Attendance
-											</p>
-											<Badge
-												variant={
-													participant.attended ? 'default' : 'destructive'
-												}
-											>
-												{participant.attended ? 'Attended' : 'Not Attended'}
-											</Badge>
-										</div>
-									</div>
-
-									<div className="flex flex-col items-center space-y-4">
-										<div className="text-center">
-											<QRCodeSVG
-												value={participant.id}
-												size={128}
-												level="H"
-												includeMargin={true}
-											/>
-											<p className="mt-2 text-sm text-gray-500">Your QR Code</p>
-										</div>
-
-										<div className="space-y-3 w-full">
-											<Button
-												onClick={handlePrint}
-												disabled={printing}
-												className="w-full"
-												type="button"
-											>
-												{printing ? (
-													<>
-														<Spinner size="sm" />
-														<span className="ml-2">Printing...</span>
-													</>
-												) : (
-													'Print Label'
-												)}
-											</Button>
-
-											<Button
-												onClick={resetScan}
-												variant="outline"
-												className="w-full"
-												type="button"
-											>
-												Scan Another Code
-											</Button>
-										</div>
-									</div>
-								</div>
-							</CardContent>
-						</Card>
+						<ParticipantCard
+							participant={participant}
+							onAttendanceUpdate={handleParticipantUpdate}
+							onReset={resetScan}
+							showActions={true}
+							showLabelPreview={true}
+						/>
 					)}
 				</div>
 			</main>

@@ -73,7 +73,8 @@ export default function Navigation() {
 	}
 
 	// Show different navigation based on whether user is admin or not
-	const isAdminArea = pathname?.startsWith('/admin');
+	// const isAdminArea = pathname?.startsWith('/admin');
+	const isAdminArea = true;
 
 	return (
 		<nav className="bg-white shadow">

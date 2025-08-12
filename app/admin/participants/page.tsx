@@ -1,7 +1,7 @@
 'use client';
 
+import ParticipantCard from '@/components/ParticipantCard';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
 	Card,
@@ -12,6 +12,15 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+	Pagination,
+	PaginationContent,
+	PaginationEllipsis,
+	PaginationItem,
+	PaginationLink,
+	PaginationNext,
+	PaginationPrevious,
+} from '@/components/ui/pagination';
 import { createClient } from '@/utils/supabase/client';
 import { useRouter } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
@@ -36,36 +45,25 @@ export default function ParticipantsPage() {
 	const [filteredParticipants, setFilteredParticipants] = useState<
 		Participant[]
 	>([]);
+	const [paginatedParticipants, setPaginatedParticipants] = useState<
+		Participant[]
+	>([]);
 	const [searchQuery, setSearchQuery] = useState('');
 	const [uploading, setUploading] = useState(false);
 	const [uploadError, setUploadError] = useState<string | null>(null);
 	const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
-	const [showAddForm, setShowAddForm] = useState(false);
 	const [showUploadForm, setShowUploadForm] = useState(false);
-	const [editingParticipant, setEditingParticipant] =
-		useState<Participant | null>(null);
-	const [formData, setFormData] = useState<
-		Omit<Participant, 'id' | 'attended' | 'created_at'>
-	>({
-		staff_id: '',
-		title: '',
-		first_name: '',
-		last_name: '',
-		email: '',
-		post: '',
-		department: '',
-	});
-	const [formError, setFormError] = useState<string | null>(null);
-	const [formLoading, setFormLoading] = useState(false);
 	const [showQRModal, setShowQRModal] = useState<{
 		participant: Participant;
 		show: boolean;
 	} | null>(null);
-	const [showAttendanceModal, setShowAttendanceModal] = useState<{
-		participant: Participant;
-		show: boolean;
-		newStatus: boolean;
-	} | null>(null);
+	const [selectedParticipant, setSelectedParticipant] =
+		useState<Participant | null>(null);
+	const [attendanceFilter, setAttendanceFilter] = useState<
+		'all' | 'attended' | 'not-attended'
+	>('all');
+	const [currentPage, setCurrentPage] = useState(1);
+	const [itemsPerPage] = useState(10);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const router = useRouter();
 
@@ -118,85 +116,61 @@ export default function ParticipantsPage() {
 		checkUser();
 	}, [router, fetchParticipants]);
 
-	// Search functionality
+	// Search, filter, and pagination functionality
 	useEffect(() => {
-		if (!searchQuery.trim()) {
-			setFilteredParticipants(participants);
-			return;
-		}
+		let filtered = participants;
 
-		const query = searchQuery.toLowerCase();
-		const filtered = participants.filter(
-			(participant) =>
-				participant.id.toLowerCase().includes(query) ||
-				participant.staff_id.toLowerCase().includes(query) ||
-				participant.first_name.toLowerCase().includes(query) ||
-				participant.last_name.toLowerCase().includes(query) ||
-				participant.title.toLowerCase().includes(query) ||
-				participant.email.toLowerCase().includes(query) ||
-				participant.post.toLowerCase().includes(query) ||
-				participant.department.toLowerCase().includes(query),
-		);
-		setFilteredParticipants(filtered);
-	}, [participants, searchQuery]);
-
-	const handleAttendanceChange = (
-		participant: Participant,
-		newStatus: boolean,
-	) => {
-		setShowAttendanceModal({
-			participant,
-			show: true,
-			newStatus,
-		});
-	};
-
-	const confirmAttendanceChange = async () => {
-		if (!showAttendanceModal) return;
-
-		try {
-			const supabase = await createClient();
-			const { data, error } = await supabase
-				.from('participants')
-				.update({ attended: showAttendanceModal.newStatus })
-				.eq('id', showAttendanceModal.participant.id)
-				.select();
-
-			if (error) {
-				console.error('Database error:', error);
-				throw error;
-			}
-
-			if (!data || data.length === 0) {
-				throw new Error('No participant was updated. Please try again.');
-			}
-
-			// Update local state
-			setParticipants((prev) =>
-				prev.map((p) =>
-					p.id === showAttendanceModal.participant.id
-						? { ...p, attended: showAttendanceModal.newStatus }
-						: p,
-				),
+		// Apply search filter
+		if (searchQuery.trim()) {
+			const query = searchQuery.toLowerCase();
+			filtered = filtered.filter(
+				(participant) =>
+					participant.id.toLowerCase().includes(query) ||
+					participant.staff_id.toLowerCase().includes(query) ||
+					participant.first_name.toLowerCase().includes(query) ||
+					participant.last_name.toLowerCase().includes(query) ||
+					participant.title.toLowerCase().includes(query) ||
+					participant.email.toLowerCase().includes(query) ||
+					participant.post.toLowerCase().includes(query) ||
+					participant.department.toLowerCase().includes(query),
 			);
-
-			// Refresh the participants list to ensure we have the latest data
-			await fetchParticipants();
-
-			setShowAttendanceModal(null);
-		} catch (error: unknown) {
-			console.error('Error updating attendance:', error);
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: 'An error occurred while updating attendance.';
-			alert(errorMessage);
 		}
-	};
 
-	const closeAttendanceModal = () => {
-		setShowAttendanceModal(null);
-	};
+		// Apply attendance filter
+		if (attendanceFilter !== 'all') {
+			filtered = filtered.filter((participant) => {
+				if (attendanceFilter === 'attended') {
+					return participant.attended;
+				}
+				return !participant.attended;
+			});
+		}
+
+		setFilteredParticipants(filtered);
+
+		// Reset to first page when filters change
+		setCurrentPage(1);
+
+		// Apply pagination
+		const startIndex = 0; // First page
+		const endIndex = Math.min(itemsPerPage, filtered.length);
+		setPaginatedParticipants(filtered.slice(startIndex, endIndex));
+	}, [participants, searchQuery, attendanceFilter, itemsPerPage]);
+
+	// Update paginated participants when page changes
+	useEffect(() => {
+		const startIndex = (currentPage - 1) * itemsPerPage;
+		const endIndex = startIndex + itemsPerPage;
+		setPaginatedParticipants(filteredParticipants.slice(startIndex, endIndex));
+	}, [currentPage, filteredParticipants, itemsPerPage]);
+
+	// Calculate pagination info
+	const totalPages = Math.ceil(filteredParticipants.length / itemsPerPage);
+	const startItem = (currentPage - 1) * itemsPerPage + 1;
+	const endItem = Math.min(
+		currentPage * itemsPerPage,
+		filteredParticipants.length,
+	);
 
 	const handleFileUpload = async (
 		event: React.ChangeEvent<HTMLInputElement>,
@@ -296,116 +270,30 @@ export default function ParticipantsPage() {
 		}
 	};
 
-	const handleFormChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-		const { name, value } = e.target;
-		setFormData((prev) => ({ ...prev, [name]: value }));
-	};
-
-	const validateForm = () => {
-		if (!formData.staff_id.trim()) {
-			return 'Staff ID is required';
-		}
-		if (!formData.first_name.trim()) {
-			return 'First name is required';
-		}
-		if (!formData.last_name.trim()) {
-			return 'Last name is required';
-		}
-		return null;
-	};
-
-	const handleAddParticipant = async (e: React.FormEvent) => {
-		e.preventDefault();
-		setFormError(null);
-
-		const error = validateForm();
-		if (error) {
-			setFormError(error);
-			return;
-		}
-
-		setFormLoading(true);
-
-		try {
-			const supabase = await createClient();
-			const { error: insertError } = await supabase
-				.from('participants')
-				.insert([formData]);
-
-			if (insertError) throw insertError;
-
-			await fetchParticipants();
-			setShowAddForm(false);
-			setFormData({
-				staff_id: '',
-				title: '',
-				first_name: '',
-				last_name: '',
-				email: '',
-				post: '',
-				department: '',
-			});
-		} catch (error: unknown) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: 'An error occurred while adding the participant.';
-			setFormError(errorMessage);
-		} finally {
-			setFormLoading(false);
-		}
-	};
-
-	const handleUpdateParticipant = async (e: React.FormEvent) => {
-		e.preventDefault();
-		setFormError(null);
-
-		if (!editingParticipant) return;
-
-		const error = validateForm();
-		if (error) {
-			setFormError(error);
-			return;
-		}
-
-		setFormLoading(true);
-
-		try {
-			const supabase = await createClient();
-			const { error: updateError } = await supabase
-				.from('participants')
-				.update(formData)
-				.eq('id', editingParticipant.id);
-
-			if (updateError) throw updateError;
-
-			await fetchParticipants();
-			setEditingParticipant(null);
-			setFormData({
-				staff_id: '',
-				title: '',
-				first_name: '',
-				last_name: '',
-				email: '',
-				post: '',
-				department: '',
-			});
-		} catch (error: unknown) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: 'An error occurred while updating the participant.';
-			setFormError(errorMessage);
-		} finally {
-			setFormLoading(false);
-		}
-	};
-
 	const handleDeleteParticipant = async (id: string) => {
-		if (!confirm('Are you sure you want to delete this participant?')) return;
+		console.log('Delete function called with id:', id);
 
+		if (!confirm('Are you sure you want to delete this participant?')) {
+			console.log('Delete cancelled by user');
+			return;
+		}
+
+		console.log('Proceeding with delete...');
 		try {
 			const supabase = await createClient();
+
+			// First check if the participant exists
+			const { data: participant, error: fetchError } = await supabase
+				.from('participants')
+				.select('*')
+				.eq('id', id)
+				.single();
+
+			if (fetchError || !participant) {
+				throw new Error('Participant not found');
+			}
+
+			// Delete the participant
 			const { error } = await supabase
 				.from('participants')
 				.delete()
@@ -413,42 +301,23 @@ export default function ParticipantsPage() {
 
 			if (error) throw error;
 
+			// Refresh the participant list
 			await fetchParticipants();
+
+			// Close participant details modal if this participant was selected
+			if (selectedParticipant?.id === id) {
+				setSelectedParticipant(null);
+			}
+
+			alert('Participant deleted successfully!');
 		} catch (error: unknown) {
+			console.error('Delete error:', error);
 			const errorMessage =
 				error instanceof Error
 					? error.message
 					: 'An error occurred while deleting the participant.';
-			alert(errorMessage);
+			alert(`Failed to delete participant: ${errorMessage}`);
 		}
-	};
-
-	const openEditForm = (participant: Participant) => {
-		setEditingParticipant(participant);
-		setFormData({
-			staff_id: participant.staff_id,
-			title: participant.title,
-			first_name: participant.first_name,
-			last_name: participant.last_name,
-			email: participant.email,
-			post: participant.post,
-			department: participant.department,
-		});
-	};
-
-	const resetForm = () => {
-		setShowAddForm(false);
-		setEditingParticipant(null);
-		setFormData({
-			staff_id: '',
-			title: '',
-			first_name: '',
-			last_name: '',
-			email: '',
-			post: '',
-			department: '',
-		});
-		setFormError(null);
 	};
 
 	const openQRModal = (participant: Participant) => {
@@ -457,6 +326,24 @@ export default function ParticipantsPage() {
 
 	const closeQRModal = () => {
 		setShowQRModal(null);
+	};
+
+	const viewParticipantDetails = (participant: Participant) => {
+		setSelectedParticipant(participant);
+	};
+
+	const closeParticipantDetails = () => {
+		setSelectedParticipant(null);
+	};
+
+	const handleParticipantUpdate = (updatedParticipant: Participant) => {
+		setSelectedParticipant(updatedParticipant);
+		// Also update the participant in the main list
+		setParticipants((prev) =>
+			prev.map((p) =>
+				p.id === updatedParticipant.id ? updatedParticipant : p,
+			),
+		);
 	};
 
 	const downloadQRCode = (participant: Participant) => {
@@ -549,6 +436,79 @@ export default function ParticipantsPage() {
 		}
 	};
 
+	const exportParticipantsToCSV = () => {
+		if (filteredParticipants.length === 0) {
+			alert('No participants found to export.');
+			return;
+		}
+
+		try {
+			// Define CSV headers
+			const headers = [
+				'Staff ID',
+				'Title',
+				'First Name',
+				'Last Name',
+				'Email',
+				'Post',
+				'Department',
+				'Attended',
+				'Created At',
+			];
+
+			// Convert participants data to CSV format
+			const csvData = filteredParticipants.map((participant) => [
+				participant.staff_id,
+				participant.title,
+				participant.first_name,
+				participant.last_name,
+				participant.email,
+				participant.post,
+				participant.department,
+				participant.attended ? 'Yes' : 'No',
+				new Date(participant.created_at).toLocaleDateString(),
+			]);
+
+			// Combine headers and data
+			const csvContent = [headers, ...csvData]
+				.map((row) => row.map((field) => `"${field}"`).join(','))
+				.join('\n');
+
+			// Create and download the file
+			const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+			const link = document.createElement('a');
+			const url = URL.createObjectURL(blob);
+			link.setAttribute('href', url);
+
+			// Generate filename with current date and filter info
+			const now = new Date();
+			const dateStr = now.toISOString().split('T')[0];
+			let filterSuffix = '';
+			if (searchQuery) {
+				filterSuffix += `_search-${searchQuery.replace(/[^a-zA-Z0-9]/g, '')}`;
+			}
+			if (attendanceFilter !== 'all') {
+				filterSuffix += `_${attendanceFilter}`;
+			}
+
+			link.setAttribute(
+				'download',
+				`participants_${dateStr}${filterSuffix}.csv`,
+			);
+			link.style.visibility = 'hidden';
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
+
+			alert(
+				`Successfully exported ${filteredParticipants.length} participants to CSV!`,
+			);
+		} catch (error) {
+			console.error('Error exporting CSV:', error);
+			alert('Error exporting participants to CSV. Please try again.');
+		}
+	};
+
 	if (loading) {
 		return (
 			<div className="min-h-screen flex items-center justify-center">
@@ -571,9 +531,9 @@ export default function ParticipantsPage() {
 							</p>
 						</div>
 
-						{/* Search Bar */}
-						<div className="mb-6">
-							<div className="max-w-md">
+						{/* Search Bar and Filters */}
+						<div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+							<div>
 								<Label htmlFor="search" className="mb-2">
 									Search Participants
 								</Label>
@@ -585,10 +545,36 @@ export default function ParticipantsPage() {
 									onChange={(e) => setSearchQuery(e.target.value)}
 								/>
 							</div>
+							<div>
+								<Label htmlFor="attendanceFilter" className="mb-2">
+									Filter by Attendance
+								</Label>
+								<select
+									id="attendanceFilter"
+									value={attendanceFilter}
+									onChange={(e) =>
+										setAttendanceFilter(
+											e.target.value as 'all' | 'attended' | 'not-attended',
+										)
+									}
+									className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+								>
+									<option value="all">All Participants</option>
+									<option value="attended">Attended Only</option>
+									<option value="not-attended">Not Attended Only</option>
+								</select>
+							</div>
 						</div>
 
 						{/* Action Buttons */}
 						<div className="mb-6 flex flex-wrap gap-3">
+							<Button
+								onClick={exportParticipantsToCSV}
+								variant="secondary"
+								className="bg-blue-600 hover:bg-blue-700 text-white"
+							>
+								Export Filtered Data (CSV)
+							</Button>
 							<Button
 								onClick={downloadAllQRs}
 								variant="secondary"
@@ -596,156 +582,18 @@ export default function ParticipantsPage() {
 							>
 								Export All QR Codes
 							</Button>
-							<Button
-								onClick={() => {
-									resetForm();
-									setShowAddForm(!showAddForm);
-									setShowUploadForm(false);
-								}}
-							>
-								{showAddForm ? 'Hide' : 'Add Participant'}
+							<Button onClick={() => router.push('/admin/participants/form')}>
+								Add Participant
 							</Button>
 							<Button
 								onClick={() => {
 									setShowUploadForm(!showUploadForm);
-									setShowAddForm(false);
-									resetForm();
 								}}
 								variant="secondary"
 							>
 								{showUploadForm ? 'Hide' : 'Upload CSV'}
 							</Button>
 						</div>
-
-						{/* Add/Edit Form */}
-						{(showAddForm || editingParticipant) && (
-							<Card className="mb-6">
-								<CardHeader>
-									<CardTitle>
-										{editingParticipant
-											? 'Edit Participant'
-											: 'Add New Participant'}
-									</CardTitle>
-								</CardHeader>
-								<CardContent>
-									{formError && (
-										<Alert variant="destructive" className="mb-4">
-											<AlertDescription>{formError}</AlertDescription>
-										</Alert>
-									)}
-
-									<form
-										onSubmit={
-											editingParticipant
-												? handleUpdateParticipant
-												: handleAddParticipant
-										}
-										className="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6"
-									>
-										<div className="sm:col-span-2">
-											<Label htmlFor="staff_id">Staff ID *</Label>
-											<Input
-												type="text"
-												name="staff_id"
-												id="staff_id"
-												value={formData.staff_id}
-												onChange={handleFormChange}
-												className="mt-1"
-											/>
-										</div>
-
-										<div className="sm:col-span-1">
-											<Label htmlFor="title">Title</Label>
-											<Input
-												type="text"
-												name="title"
-												id="title"
-												value={formData.title}
-												onChange={handleFormChange}
-												className="mt-1"
-											/>
-										</div>
-
-										<div className="sm:col-span-2">
-											<Label htmlFor="first_name">First Name *</Label>
-											<Input
-												type="text"
-												name="first_name"
-												id="first_name"
-												value={formData.first_name}
-												onChange={handleFormChange}
-												className="mt-1"
-											/>
-										</div>
-
-										<div className="sm:col-span-2">
-											<Label htmlFor="last_name">Last Name *</Label>
-											<Input
-												type="text"
-												name="last_name"
-												id="last_name"
-												value={formData.last_name}
-												onChange={handleFormChange}
-												className="mt-1"
-											/>
-										</div>
-
-										<div className="sm:col-span-3">
-											<Label htmlFor="email">Email</Label>
-											<Input
-												type="email"
-												name="email"
-												id="email"
-												value={formData.email}
-												onChange={handleFormChange}
-												className="mt-1"
-											/>
-										</div>
-
-										<div className="sm:col-span-3">
-											<Label htmlFor="post">Post</Label>
-											<Input
-												type="text"
-												name="post"
-												id="post"
-												value={formData.post}
-												onChange={handleFormChange}
-												className="mt-1"
-											/>
-										</div>
-
-										<div className="sm:col-span-6">
-											<Label htmlFor="department">Department</Label>
-											<Input
-												type="text"
-												name="department"
-												id="department"
-												value={formData.department}
-												onChange={handleFormChange}
-												className="mt-1"
-											/>
-										</div>
-
-										<div className="sm:col-span-6 flex justify-end space-x-3">
-											<Button
-												type="button"
-												variant="outline"
-												onClick={resetForm}
-											>
-												Cancel
-											</Button>
-											<Button type="submit" disabled={formLoading}>
-												{formLoading
-													? 'Saving...'
-													: editingParticipant
-														? 'Update'
-														: 'Add'}
-											</Button>
-										</div>
-									</form>
-								</CardContent>
-							</Card>
-						)}
 
 						{/* Upload Section */}
 						{showUploadForm && (
@@ -798,7 +646,16 @@ export default function ParticipantsPage() {
 							<div className="px-4 py-5 sm:p-6">
 								<h3 className="text-lg leading-6 font-medium text-gray-900">
 									Participants ({filteredParticipants.length}{' '}
-									{searchQuery ? `of ${participants.length}` : 'total'})
+									{searchQuery || attendanceFilter !== 'all'
+										? `of ${participants.length}`
+										: 'total'}
+									)
+									{filteredParticipants.length > itemsPerPage && (
+										<span className="text-sm font-normal text-gray-500 ml-2">
+											(Showing {startItem}-{endItem} of{' '}
+											{filteredParticipants.length})
+										</span>
+									)}
 								</h3>
 								<div className="mt-4">
 									{filteredParticipants.length === 0 ? (
@@ -874,25 +731,32 @@ export default function ParticipantsPage() {
 															scope="col"
 															className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
 														>
-															QR Code
-														</th>
-														<th
-															scope="col"
-															className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-														>
 															Actions
 														</th>
 													</tr>
 												</thead>
 												<tbody className="bg-white divide-y divide-gray-200">
-													{filteredParticipants.map((participant) => (
-														<tr key={participant.id}>
+													{paginatedParticipants.map((participant) => (
+														<tr
+															key={participant.id}
+															className={
+																participant.attended ? 'bg-purple-50' : ''
+															}
+														>
 															<td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
 																{participant.staff_id}
 															</td>
 															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-																{participant.title} {participant.first_name}{' '}
-																{participant.last_name}
+																<button
+																	onClick={() =>
+																		viewParticipantDetails(participant)
+																	}
+																	className="text-blue-600 hover:text-blue-900 underline cursor-pointer"
+																	type="button"
+																>
+																	{participant.title} {participant.first_name}{' '}
+																	{participant.last_name}
+																</button>
 															</td>
 															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
 																{participant.email}
@@ -904,66 +768,175 @@ export default function ParticipantsPage() {
 																{participant.department}
 															</td>
 															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+																<span
+																	className={`font-medium ${participant.attended ? 'text-green-600' : 'text-red-600'}`}
+																>
+																	{participant.attended ? 'Yes' : 'No'}
+																</span>
+															</td>
+															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
 																<div className="flex items-center space-x-2">
-																	<Badge
-																		variant={
-																			participant.attended
-																				? 'default'
-																				: 'destructive'
-																		}
-																	>
-																		{participant.attended ? 'Yes' : 'No'}
-																	</Badge>
 																	<Button
 																		variant="ghost"
 																		size="sm"
-																		onClick={() =>
-																			handleAttendanceChange(
-																				participant,
-																				!participant.attended,
-																			)
-																		}
-																		className="text-blue-600 hover:text-blue-900 h-auto p-1"
-																		title={`Mark as ${participant.attended ? 'not attended' : 'attended'}`}
+																		onClick={(e) => {
+																			e.preventDefault();
+																			e.stopPropagation();
+																			openQRModal(participant);
+																		}}
+																		className="text-indigo-600 hover:text-indigo-900 h-auto p-1"
+																		title="View QR Code"
+																		type="button"
 																	>
-																		Toggle
+																		<svg
+																			className="w-4 h-4"
+																			fill="none"
+																			stroke="currentColor"
+																			viewBox="0 0 24 24"
+																		>
+																			<title>QR Code</title>
+																			<path
+																				strokeLinecap="round"
+																				strokeLinejoin="round"
+																				strokeWidth={2}
+																				d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 16h4.01M12 16h.01m0 0h4.01M12 20h4.01M12 8h.01M8 12h.01M8 8h.01m0 12h4.01M4 12h4.01M4 8h.01m0 8h.01M4 20h4.01"
+																			/>
+																		</svg>
+																	</Button>
+																	<Button
+																		variant="ghost"
+																		size="sm"
+																		onClick={(e) => {
+																			e.preventDefault();
+																			e.stopPropagation();
+																			router.push(
+																				`/admin/participants/form?edit=${participant.id}`,
+																			);
+																		}}
+																		className="text-indigo-600 hover:text-indigo-900 h-auto p-1"
+																		title="Edit Participant"
+																		type="button"
+																	>
+																		<svg
+																			className="w-4 h-4"
+																			fill="none"
+																			stroke="currentColor"
+																			viewBox="0 0 24 24"
+																		>
+																			<title>Edit</title>
+																			<path
+																				strokeLinecap="round"
+																				strokeLinejoin="round"
+																				strokeWidth={2}
+																				d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+																			/>
+																		</svg>
+																	</Button>
+																	<Button
+																		variant="ghost"
+																		size="sm"
+																		onClick={(e) => {
+																			e.preventDefault();
+																			e.stopPropagation();
+																			handleDeleteParticipant(participant.id);
+																		}}
+																		className="text-red-600 hover:text-red-900 h-auto p-1"
+																		title="Delete Participant"
+																		type="button"
+																	>
+																		<svg
+																			className="w-4 h-4"
+																			fill="none"
+																			stroke="currentColor"
+																			viewBox="0 0 24 24"
+																		>
+																			<title>Delete</title>
+																			<path
+																				strokeLinecap="round"
+																				strokeLinejoin="round"
+																				strokeWidth={2}
+																				d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+																			/>
+																		</svg>
 																	</Button>
 																</div>
-															</td>
-															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-																<Button
-																	variant="ghost"
-																	size="sm"
-																	onClick={() => openQRModal(participant)}
-																	className="text-indigo-600 hover:text-indigo-900 h-auto p-1"
-																>
-																	View QR
-																</Button>
-															</td>
-															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-																<Button
-																	variant="ghost"
-																	size="sm"
-																	onClick={() => openEditForm(participant)}
-																	className="text-indigo-600 hover:text-indigo-900 h-auto p-1 mr-2"
-																>
-																	Edit
-																</Button>
-																<Button
-																	variant="ghost"
-																	size="sm"
-																	onClick={() =>
-																		handleDeleteParticipant(participant.id)
-																	}
-																	className="text-red-600 hover:text-red-900 h-auto p-1"
-																>
-																	Delete
-																</Button>
 															</td>
 														</tr>
 													))}
 												</tbody>
 											</table>
+										</div>
+									)}
+
+									{/* Pagination */}
+									{filteredParticipants.length > itemsPerPage && (
+										<div className="mt-6 flex justify-center">
+											<Pagination>
+												<PaginationContent>
+													<PaginationItem>
+														<PaginationPrevious
+															onClick={() =>
+																setCurrentPage(Math.max(1, currentPage - 1))
+															}
+															className={
+																currentPage === 1
+																	? 'pointer-events-none opacity-50'
+																	: 'cursor-pointer'
+															}
+														/>
+													</PaginationItem>
+
+													{/* Page numbers */}
+													{Array.from(
+														{ length: Math.min(totalPages, 5) },
+														(_, i) => {
+															let pageNum: number;
+															if (totalPages <= 5) {
+																pageNum = i + 1;
+															} else if (currentPage <= 3) {
+																pageNum = i + 1;
+															} else if (currentPage >= totalPages - 2) {
+																pageNum = totalPages - 4 + i;
+															} else {
+																pageNum = currentPage - 2 + i;
+															}
+
+															return (
+																<PaginationItem key={pageNum}>
+																	<PaginationLink
+																		onClick={() => setCurrentPage(pageNum)}
+																		isActive={currentPage === pageNum}
+																		className="cursor-pointer"
+																	>
+																		{pageNum}
+																	</PaginationLink>
+																</PaginationItem>
+															);
+														},
+													)}
+
+													{totalPages > 5 && currentPage < totalPages - 2 && (
+														<PaginationItem>
+															<PaginationEllipsis />
+														</PaginationItem>
+													)}
+
+													<PaginationItem>
+														<PaginationNext
+															onClick={() =>
+																setCurrentPage(
+																	Math.min(totalPages, currentPage + 1),
+																)
+															}
+															className={
+																currentPage === totalPages
+																	? 'pointer-events-none opacity-50'
+																	: 'cursor-pointer'
+															}
+														/>
+													</PaginationItem>
+												</PaginationContent>
+											</Pagination>
 										</div>
 									)}
 								</div>
@@ -972,6 +945,52 @@ export default function ParticipantsPage() {
 					</div>
 				</div>
 			</main>
+
+			{/* Participant Details Modal */}
+			{selectedParticipant && (
+				<div className="fixed z-50 inset-0 overflow-y-auto">
+					<div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+						<div
+							className="fixed inset-0 transition-opacity"
+							aria-hidden="true"
+							onClick={closeParticipantDetails}
+						>
+							<div className="absolute inset-0 bg-gray-500 opacity-75"></div>
+						</div>
+
+						<span
+							className="hidden sm:inline-block sm:align-middle sm:h-screen"
+							aria-hidden="true"
+						>
+							&#8203;
+						</span>
+
+						<div className="inline-block align-bottom bg-gray-50 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full relative z-50 max-h-[90vh] overflow-y-auto">
+							<div className="bg-gray-50 px-6 pt-6">
+								<div className="flex justify-between items-center mb-4">
+									<h2 className="text-xl font-semibold text-gray-900">
+										Participant Details
+									</h2>
+									<Button
+										onClick={closeParticipantDetails}
+										variant="outline"
+										size="sm"
+									>
+										Close
+									</Button>
+								</div>
+								<ParticipantCard
+									participant={selectedParticipant}
+									onAttendanceUpdate={handleParticipantUpdate}
+									showActions={true}
+									showLabelPreview={true}
+									className="pb-6"
+								/>
+							</div>
+						</div>
+					</div>
+				</div>
+			)}
 
 			{/* QR Code Modal */}
 			{showQRModal?.show && (
@@ -1027,87 +1046,6 @@ export default function ParticipantsPage() {
 									className="mt-3 sm:mt-0"
 								>
 									Close
-								</Button>
-							</div>
-						</div>
-					</div>
-				</div>
-			)}
-
-			{/* Attendance Change Confirmation Modal */}
-			{showAttendanceModal?.show && (
-				<div className="fixed z-50 inset-0 overflow-y-auto">
-					<div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
-						<div
-							className="fixed inset-0 transition-opacity"
-							aria-hidden="true"
-						>
-							<div className="absolute inset-0 bg-gray-500 opacity-75"></div>
-						</div>
-
-						<span
-							className="hidden sm:inline-block sm:align-middle sm:h-screen"
-							aria-hidden="true"
-						>
-							&#8203;
-						</span>
-
-						<div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full relative z-50">
-							<div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-								<div className="sm:flex sm:items-start">
-									<div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-yellow-100 sm:mx-0 sm:h-10 sm:w-10">
-										<svg
-											className="h-6 w-6 text-yellow-600"
-											fill="none"
-											viewBox="0 0 24 24"
-											stroke="currentColor"
-											aria-hidden="true"
-										>
-											<path
-												strokeLinecap="round"
-												strokeLinejoin="round"
-												strokeWidth="2"
-												d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"
-											/>
-										</svg>
-									</div>
-									<div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
-										<h3 className="text-lg leading-6 font-medium text-gray-900">
-											Change Attendance Status
-										</h3>
-										<div className="mt-2">
-											<p className="text-sm text-gray-500">
-												Are you sure you want to mark{' '}
-												<strong>
-													{showAttendanceModal.participant.first_name}{' '}
-													{showAttendanceModal.participant.last_name}
-												</strong>{' '}
-												as{' '}
-												<strong>
-													{showAttendanceModal.newStatus
-														? 'attended'
-														: 'not attended'}
-												</strong>
-												?
-											</p>
-										</div>
-									</div>
-								</div>
-							</div>
-							<div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-								<Button
-									onClick={confirmAttendanceChange}
-									variant="destructive"
-									className="sm:ml-3"
-								>
-									Confirm
-								</Button>
-								<Button
-									onClick={closeAttendanceModal}
-									variant="outline"
-									className="mt-3 sm:mt-0"
-								>
-									Cancel
 								</Button>
 							</div>
 						</div>
