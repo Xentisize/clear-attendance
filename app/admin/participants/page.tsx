@@ -1,9 +1,21 @@
 'use client';
 
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { createClient } from '@/utils/supabase/client';
 import { useRouter } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type Participant = {
 	id: string;
@@ -19,11 +31,6 @@ type Participant = {
 };
 
 export default function ParticipantsPage() {
-	const [user, setUser] = useState<{
-		id: string;
-		email: string;
-		name?: string;
-	} | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [participants, setParticipants] = useState<Participant[]>([]);
 	const [filteredParticipants, setFilteredParticipants] = useState<
@@ -54,8 +61,29 @@ export default function ParticipantsPage() {
 		participant: Participant;
 		show: boolean;
 	} | null>(null);
+	const [showAttendanceModal, setShowAttendanceModal] = useState<{
+		participant: Participant;
+		show: boolean;
+		newStatus: boolean;
+	} | null>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const router = useRouter();
+
+	const fetchParticipants = useCallback(async () => {
+		const supabase = await createClient();
+		const { data, error } = await supabase
+			.from('participants')
+			.select('*')
+			.order('created_at', { ascending: false });
+
+		if (error) {
+			console.error('Error fetching participants:', error);
+			return;
+		}
+
+		setParticipants(data || []);
+		setFilteredParticipants(data || []);
+	}, []);
 
 	useEffect(() => {
 		const checkUser = async () => {
@@ -83,33 +111,12 @@ export default function ParticipantsPage() {
 				return;
 			}
 
-			setUser({
-				...session.user,
-				...adminData,
-			});
-
 			await fetchParticipants();
 			setLoading(false);
 		};
 
 		checkUser();
-	}, [router]);
-
-	const fetchParticipants = async () => {
-		const supabase = await createClient();
-		const { data, error } = await supabase
-			.from('participants')
-			.select('*')
-			.order('created_at', { ascending: false });
-
-		if (error) {
-			console.error('Error fetching participants:', error);
-			return;
-		}
-
-		setParticipants(data || []);
-		setFilteredParticipants(data || []);
-	};
+	}, [router, fetchParticipants]);
 
 	// Search functionality
 	useEffect(() => {
@@ -133,13 +140,26 @@ export default function ParticipantsPage() {
 		setFilteredParticipants(filtered);
 	}, [participants, searchQuery]);
 
-	const handleMarkAttended = async (participantId: string) => {
+	const handleAttendanceChange = (
+		participant: Participant,
+		newStatus: boolean,
+	) => {
+		setShowAttendanceModal({
+			participant,
+			show: true,
+			newStatus,
+		});
+	};
+
+	const confirmAttendanceChange = async () => {
+		if (!showAttendanceModal) return;
+
 		try {
 			const supabase = await createClient();
 			const { data, error } = await supabase
 				.from('participants')
-				.update({ attended: true })
-				.eq('id', participantId)
+				.update({ attended: showAttendanceModal.newStatus })
+				.eq('id', showAttendanceModal.participant.id)
 				.select();
 
 			if (error) {
@@ -154,15 +174,16 @@ export default function ParticipantsPage() {
 			// Update local state
 			setParticipants((prev) =>
 				prev.map((p) =>
-					p.id === participantId ? { ...p, attended: true } : p,
+					p.id === showAttendanceModal.participant.id
+						? { ...p, attended: showAttendanceModal.newStatus }
+						: p,
 				),
 			);
 
 			// Refresh the participants list to ensure we have the latest data
 			await fetchParticipants();
 
-			// Show success message
-			alert('Attendance marked successfully!');
+			setShowAttendanceModal(null);
 		} catch (error: unknown) {
 			console.error('Error updating attendance:', error);
 			const errorMessage =
@@ -173,11 +194,8 @@ export default function ParticipantsPage() {
 		}
 	};
 
-	const handleLogout = async () => {
-		const supabase = await createClient();
-		await supabase.auth.signOut();
-		router.push('/admin/login');
-		router.refresh();
+	const closeAttendanceModal = () => {
+		setShowAttendanceModal(null);
 	};
 
 	const handleFileUpload = async (
@@ -541,53 +559,6 @@ export default function ParticipantsPage() {
 
 	return (
 		<div className="min-h-screen bg-gray-50">
-			<nav className="bg-white shadow">
-				<div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-					<div className="flex justify-between h-16">
-						<div className="flex">
-							<div className="flex-shrink-0 flex items-center">
-								<h1 className="text-xl font-bold">QR Attendance Admin</h1>
-							</div>
-							<div className="hidden sm:ml-6 sm:flex sm:space-x-8">
-								<a
-									href="/admin/dashboard"
-									className="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-								>
-									Dashboard
-								</a>
-								<a
-									href="/admin/participants"
-									className="border-indigo-500 text-gray-900 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-								>
-									Participants
-								</a>
-								<a
-									href="/admin/printer"
-									className="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-								>
-									Printer
-								</a>
-							</div>
-						</div>
-						<div className="flex items-center">
-							<div className="flex-shrink-0">
-								<button
-									onClick={handleLogout}
-									className="relative inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-								>
-									Logout
-								</button>
-							</div>
-							<div className="ml-3 relative">
-								<div className="text-sm text-gray-700">
-									{user?.name || user?.email}
-								</div>
-							</div>
-						</div>
-					</div>
-				</div>
-			</nav>
-
 			<main>
 				<div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
 					<div className="px-4 py-6 sm:px-0">
@@ -603,67 +574,64 @@ export default function ParticipantsPage() {
 						{/* Search Bar */}
 						<div className="mb-6">
 							<div className="max-w-md">
-								<label
-									htmlFor="search"
-									className="block text-sm font-medium text-gray-700 mb-2"
-								>
+								<Label htmlFor="search" className="mb-2">
 									Search Participants
-								</label>
-								<input
+								</Label>
+								<Input
 									type="text"
 									id="search"
 									placeholder="Search by ID, staff ID, name, email, post, or department..."
 									value={searchQuery}
 									onChange={(e) => setSearchQuery(e.target.value)}
-									className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
 								/>
 							</div>
 						</div>
 
 						{/* Action Buttons */}
-						<div className="mb-6">
-							<button
+						<div className="mb-6 flex flex-wrap gap-3">
+							<Button
 								onClick={downloadAllQRs}
-								className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 mr-3"
+								variant="secondary"
+								className="bg-green-600 hover:bg-green-700 text-white"
 							>
 								Export All QR Codes
-							</button>
-							<button
+							</Button>
+							<Button
 								onClick={() => {
 									resetForm();
 									setShowAddForm(!showAddForm);
 									setShowUploadForm(false);
 								}}
-								className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 mr-3"
 							>
 								{showAddForm ? 'Hide' : 'Add Participant'}
-							</button>
-							<button
+							</Button>
+							<Button
 								onClick={() => {
 									setShowUploadForm(!showUploadForm);
 									setShowAddForm(false);
 									resetForm();
 								}}
-								className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+								variant="secondary"
 							>
 								{showUploadForm ? 'Hide' : 'Upload CSV'}
-							</button>
+							</Button>
 						</div>
 
 						{/* Add/Edit Form */}
 						{(showAddForm || editingParticipant) && (
-							<div className="bg-white shadow sm:rounded-lg mb-6">
-								<div className="px-4 py-5 sm:p-6">
-									<h3 className="text-lg leading-6 font-medium text-gray-900">
+							<Card className="mb-6">
+								<CardHeader>
+									<CardTitle>
 										{editingParticipant
 											? 'Edit Participant'
 											: 'Add New Participant'}
-									</h3>
-
+									</CardTitle>
+								</CardHeader>
+								<CardContent>
 									{formError && (
-										<div className="mt-4 rounded-md bg-red-50 p-4">
-											<div className="text-sm text-red-700">{formError}</div>
-										</div>
+										<Alert variant="destructive" className="mb-4">
+											<AlertDescription>{formError}</AlertDescription>
+										</Alert>
 									)}
 
 									<form
@@ -672,220 +640,157 @@ export default function ParticipantsPage() {
 												? handleUpdateParticipant
 												: handleAddParticipant
 										}
-										className="mt-5 grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6"
+										className="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6"
 									>
 										<div className="sm:col-span-2">
-											<label
-												htmlFor="staff_id"
-												className="block text-sm font-medium text-gray-700"
-											>
-												Staff ID *
-											</label>
-											<div className="mt-1">
-												<input
-													type="text"
-													name="staff_id"
-													id="staff_id"
-													value={formData.staff_id}
-													onChange={handleFormChange}
-													className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
-												/>
-											</div>
+											<Label htmlFor="staff_id">Staff ID *</Label>
+											<Input
+												type="text"
+												name="staff_id"
+												id="staff_id"
+												value={formData.staff_id}
+												onChange={handleFormChange}
+												className="mt-1"
+											/>
 										</div>
 
 										<div className="sm:col-span-1">
-											<label
-												htmlFor="title"
-												className="block text-sm font-medium text-gray-700"
-											>
-												Title
-											</label>
-											<div className="mt-1">
-												<input
-													type="text"
-													name="title"
-													id="title"
-													value={formData.title}
-													onChange={handleFormChange}
-													className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
-												/>
-											</div>
+											<Label htmlFor="title">Title</Label>
+											<Input
+												type="text"
+												name="title"
+												id="title"
+												value={formData.title}
+												onChange={handleFormChange}
+												className="mt-1"
+											/>
 										</div>
 
 										<div className="sm:col-span-2">
-											<label
-												htmlFor="first_name"
-												className="block text-sm font-medium text-gray-700"
-											>
-												First Name *
-											</label>
-											<div className="mt-1">
-												<input
-													type="text"
-													name="first_name"
-													id="first_name"
-													value={formData.first_name}
-													onChange={handleFormChange}
-													className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
-												/>
-											</div>
+											<Label htmlFor="first_name">First Name *</Label>
+											<Input
+												type="text"
+												name="first_name"
+												id="first_name"
+												value={formData.first_name}
+												onChange={handleFormChange}
+												className="mt-1"
+											/>
 										</div>
 
 										<div className="sm:col-span-2">
-											<label
-												htmlFor="last_name"
-												className="block text-sm font-medium text-gray-700"
-											>
-												Last Name *
-											</label>
-											<div className="mt-1">
-												<input
-													type="text"
-													name="last_name"
-													id="last_name"
-													value={formData.last_name}
-													onChange={handleFormChange}
-													className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
-												/>
-											</div>
+											<Label htmlFor="last_name">Last Name *</Label>
+											<Input
+												type="text"
+												name="last_name"
+												id="last_name"
+												value={formData.last_name}
+												onChange={handleFormChange}
+												className="mt-1"
+											/>
 										</div>
 
 										<div className="sm:col-span-3">
-											<label
-												htmlFor="email"
-												className="block text-sm font-medium text-gray-700"
-											>
-												Email
-											</label>
-											<div className="mt-1">
-												<input
-													type="email"
-													name="email"
-													id="email"
-													value={formData.email}
-													onChange={handleFormChange}
-													className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
-												/>
-											</div>
+											<Label htmlFor="email">Email</Label>
+											<Input
+												type="email"
+												name="email"
+												id="email"
+												value={formData.email}
+												onChange={handleFormChange}
+												className="mt-1"
+											/>
 										</div>
 
 										<div className="sm:col-span-3">
-											<label
-												htmlFor="post"
-												className="block text-sm font-medium text-gray-700"
-											>
-												Post
-											</label>
-											<div className="mt-1">
-												<input
-													type="text"
-													name="post"
-													id="post"
-													value={formData.post}
-													onChange={handleFormChange}
-													className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
-												/>
-											</div>
+											<Label htmlFor="post">Post</Label>
+											<Input
+												type="text"
+												name="post"
+												id="post"
+												value={formData.post}
+												onChange={handleFormChange}
+												className="mt-1"
+											/>
 										</div>
 
 										<div className="sm:col-span-6">
-											<label
-												htmlFor="department"
-												className="block text-sm font-medium text-gray-700"
-											>
-												Department
-											</label>
-											<div className="mt-1">
-												<input
-													type="text"
-													name="department"
-													id="department"
-													value={formData.department}
-													onChange={handleFormChange}
-													className="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md"
-												/>
-											</div>
+											<Label htmlFor="department">Department</Label>
+											<Input
+												type="text"
+												name="department"
+												id="department"
+												value={formData.department}
+												onChange={handleFormChange}
+												className="mt-1"
+											/>
 										</div>
 
 										<div className="sm:col-span-6 flex justify-end space-x-3">
-											<button
+											<Button
 												type="button"
+												variant="outline"
 												onClick={resetForm}
-												className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
 											>
 												Cancel
-											</button>
-											<button
-												type="submit"
-												disabled={formLoading}
-												className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-											>
+											</Button>
+											<Button type="submit" disabled={formLoading}>
 												{formLoading
 													? 'Saving...'
 													: editingParticipant
 														? 'Update'
 														: 'Add'}
-											</button>
+											</Button>
 										</div>
 									</form>
-								</div>
-							</div>
+								</CardContent>
+							</Card>
 						)}
 
 						{/* Upload Section */}
 						{showUploadForm && (
-							<div className="bg-white shadow sm:rounded-lg mb-6">
-								<div className="px-4 py-5 sm:p-6">
-									<h3 className="text-lg leading-6 font-medium text-gray-900">
-										Upload Participant List
-									</h3>
-									<div className="mt-2 max-w-xl text-sm text-gray-500">
-										<p>
-											Upload a CSV file with participant information. The file
-											should include the following headers: staff id, title,
-											first_name, last_name, email, post, department
-										</p>
-									</div>
-
+							<Card className="mb-6">
+								<CardHeader>
+									<CardTitle>Upload Participant List</CardTitle>
+									<CardDescription>
+										Upload a CSV file with participant information. The file
+										should include the following headers: staff id, title,
+										first_name, last_name, email, post, department
+									</CardDescription>
+								</CardHeader>
+								<CardContent>
 									{uploadError && (
-										<div className="mt-4 rounded-md bg-red-50 p-4">
-											<div className="text-sm text-red-700">{uploadError}</div>
-										</div>
+										<Alert variant="destructive" className="mb-4">
+											<AlertDescription>{uploadError}</AlertDescription>
+										</Alert>
 									)}
 
 									{uploadSuccess && (
-										<div className="mt-4 rounded-md bg-green-50 p-4">
-											<div className="text-sm text-green-700">
-												{uploadSuccess}
-											</div>
-										</div>
+										<Alert className="mb-4">
+											<AlertDescription>{uploadSuccess}</AlertDescription>
+										</Alert>
 									)}
 
-									<div className="mt-5">
-										<input
+									<div>
+										<Input
 											ref={fileInputRef}
 											type="file"
 											accept=".csv"
 											onChange={handleFileUpload}
 											disabled={uploading}
-											className="block w-full text-sm text-gray-500
-                        file:mr-4 file:py-2 file:px-4
-                        file:rounded-md file:border-0
-                        file:text-sm file:font-medium
-                        file:bg-indigo-50 file:text-indigo-700
-                        hover:file:bg-indigo-100"
+											className="file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
 										/>
 										{uploading && (
 											<div className="mt-2 flex items-center">
 												<div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900 mr-2"></div>
-												<span className="text-sm text-gray-500">
+												<span className="text-sm text-muted-foreground">
 													Uploading and processing...
 												</span>
 											</div>
 										)}
 									</div>
-								</div>
-							</div>
+								</CardContent>
+							</Card>
 						)}
 
 						{/* Participants List */}
@@ -903,7 +808,9 @@ export default function ParticipantsPage() {
 												fill="none"
 												viewBox="0 0 24 24"
 												stroke="currentColor"
+												aria-hidden="true"
 											>
+												<title>No participants found</title>
 												<path
 													strokeLinecap="round"
 													strokeLinejoin="round"
@@ -997,47 +904,61 @@ export default function ParticipantsPage() {
 																{participant.department}
 															</td>
 															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-																<span
-																	className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${participant.attended ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}
-																>
-																	{participant.attended ? 'Yes' : 'No'}
-																</span>
+																<div className="flex items-center space-x-2">
+																	<Badge
+																		variant={
+																			participant.attended
+																				? 'default'
+																				: 'destructive'
+																		}
+																	>
+																		{participant.attended ? 'Yes' : 'No'}
+																	</Badge>
+																	<Button
+																		variant="ghost"
+																		size="sm"
+																		onClick={() =>
+																			handleAttendanceChange(
+																				participant,
+																				!participant.attended,
+																			)
+																		}
+																		className="text-blue-600 hover:text-blue-900 h-auto p-1"
+																		title={`Mark as ${participant.attended ? 'not attended' : 'attended'}`}
+																	>
+																		Toggle
+																	</Button>
+																</div>
 															</td>
 															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-																<button
+																<Button
+																	variant="ghost"
+																	size="sm"
 																	onClick={() => openQRModal(participant)}
-																	className="text-indigo-600 hover:text-indigo-900"
+																	className="text-indigo-600 hover:text-indigo-900 h-auto p-1"
 																>
 																	View QR
-																</button>
+																</Button>
 															</td>
 															<td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-																<button
+																<Button
+																	variant="ghost"
+																	size="sm"
 																	onClick={() => openEditForm(participant)}
-																	className="text-indigo-600 hover:text-indigo-900 mr-3"
+																	className="text-indigo-600 hover:text-indigo-900 h-auto p-1 mr-2"
 																>
 																	Edit
-																</button>
-																{!participant.attended && (
-																	<button
-																		type="button"
-																		onClick={() =>
-																			handleMarkAttended(participant.id)
-																		}
-																		className="text-green-600 hover:text-green-900 mr-3"
-																	>
-																		Mark Attended
-																	</button>
-																)}
-																<button
-																	type="button"
+																</Button>
+																<Button
+																	variant="ghost"
+																	size="sm"
 																	onClick={() =>
 																		handleDeleteParticipant(participant.id)
 																	}
-																	className="text-red-600 hover:text-red-900"
+																	className="text-red-600 hover:text-red-900 h-auto p-1"
 																>
 																	Delete
-																</button>
+																</Button>
 															</td>
 														</tr>
 													))}
@@ -1094,20 +1015,100 @@ export default function ParticipantsPage() {
 								</div>
 							</div>
 							<div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-								<button
+								<Button
 									onClick={() => downloadQRCode(showQRModal.participant)}
-									type="button"
-									className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 sm:ml-3 sm:w-auto sm:text-sm"
+									className="bg-green-600 hover:bg-green-700 sm:ml-3"
 								>
 									Download PNG
-								</button>
-								<button
+								</Button>
+								<Button
 									onClick={closeQRModal}
-									type="button"
-									className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
+									variant="outline"
+									className="mt-3 sm:mt-0"
 								>
 									Close
-								</button>
+								</Button>
+							</div>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{/* Attendance Change Confirmation Modal */}
+			{showAttendanceModal?.show && (
+				<div className="fixed z-50 inset-0 overflow-y-auto">
+					<div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+						<div
+							className="fixed inset-0 transition-opacity"
+							aria-hidden="true"
+						>
+							<div className="absolute inset-0 bg-gray-500 opacity-75"></div>
+						</div>
+
+						<span
+							className="hidden sm:inline-block sm:align-middle sm:h-screen"
+							aria-hidden="true"
+						>
+							&#8203;
+						</span>
+
+						<div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full relative z-50">
+							<div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+								<div className="sm:flex sm:items-start">
+									<div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-yellow-100 sm:mx-0 sm:h-10 sm:w-10">
+										<svg
+											className="h-6 w-6 text-yellow-600"
+											fill="none"
+											viewBox="0 0 24 24"
+											stroke="currentColor"
+											aria-hidden="true"
+										>
+											<path
+												strokeLinecap="round"
+												strokeLinejoin="round"
+												strokeWidth="2"
+												d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"
+											/>
+										</svg>
+									</div>
+									<div className="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left">
+										<h3 className="text-lg leading-6 font-medium text-gray-900">
+											Change Attendance Status
+										</h3>
+										<div className="mt-2">
+											<p className="text-sm text-gray-500">
+												Are you sure you want to mark{' '}
+												<strong>
+													{showAttendanceModal.participant.first_name}{' '}
+													{showAttendanceModal.participant.last_name}
+												</strong>{' '}
+												as{' '}
+												<strong>
+													{showAttendanceModal.newStatus
+														? 'attended'
+														: 'not attended'}
+												</strong>
+												?
+											</p>
+										</div>
+									</div>
+								</div>
+							</div>
+							<div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+								<Button
+									onClick={confirmAttendanceChange}
+									variant="destructive"
+									className="sm:ml-3"
+								>
+									Confirm
+								</Button>
+								<Button
+									onClick={closeAttendanceModal}
+									variant="outline"
+									className="mt-3 sm:mt-0"
+								>
+									Cancel
+								</Button>
 							</div>
 						</div>
 					</div>

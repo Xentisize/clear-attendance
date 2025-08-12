@@ -245,17 +245,6 @@ export default function Home() {
 
 	return (
 		<div className="min-h-screen bg-gray-50">
-			{/* Navigation */}
-			<nav className="bg-white shadow">
-				<div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-					<div className="flex justify-between h-16">
-						<div className="flex-shrink-0 flex items-center">
-							<h1 className="text-xl font-bold">QR Attendance System</h1>
-						</div>
-					</div>
-				</div>
-			</nav>
-
 			<main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
 				<div className="px-4 py-6 sm:px-0">
 					{/* Header */}

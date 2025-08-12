@@ -19,7 +19,7 @@ import {
 	WifiOff,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 interface PrinterDevice {
 	name: string;
@@ -33,14 +33,7 @@ interface PrinterStatus {
 	availablePrinters: PrinterDevice[];
 }
 
-interface User {
-	id: string;
-	email: string;
-	name?: string;
-}
-
 export default function PrinterManagement() {
-	const [user, setUser] = useState<User | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [printerStatus, setPrinterStatus] = useState<PrinterStatus>({
 		isConnected: false,
@@ -56,6 +49,26 @@ export default function PrinterManagement() {
 		text: string;
 	} | null>(null);
 	const router = useRouter();
+
+	const checkPrinterStatus = useCallback(async () => {
+		const status: PrinterStatus = {
+			isConnected: printerService.isConnectedService(),
+			isSdkInitialized: printerService.isSdkInitializedService(),
+			selectedPrinter: printerService.getSelectedPrinter(),
+			availablePrinters: [],
+		};
+
+		if (status.isConnected) {
+			try {
+				const printers = await printerService.getPrinters();
+				status.availablePrinters = printers as PrinterDevice[];
+			} catch (error) {
+				console.error('Error getting printers:', error);
+			}
+		}
+
+		setPrinterStatus(status);
+	}, []);
 
 	useEffect(() => {
 		const checkUser = async () => {
@@ -83,10 +96,6 @@ export default function PrinterManagement() {
 				return;
 			}
 
-			setUser({
-				...session.user,
-				...adminData,
-			});
 			setLoading(false);
 		};
 
@@ -99,27 +108,7 @@ export default function PrinterManagement() {
 			await checkPrinterStatus();
 		};
 		checkStatus();
-	}, []);
-
-	const checkPrinterStatus = async () => {
-		const status: PrinterStatus = {
-			isConnected: printerService.isConnectedService(),
-			isSdkInitialized: printerService.isSdkInitializedService(),
-			selectedPrinter: printerService.getSelectedPrinter(),
-			availablePrinters: [],
-		};
-
-		if (status.isConnected) {
-			try {
-				const printers = await printerService.getPrinters();
-				status.availablePrinters = printers as PrinterDevice[];
-			} catch (error) {
-				console.error('Error getting printers:', error);
-			}
-		}
-
-		setPrinterStatus(status);
-	};
+	}, [checkPrinterStatus]);
 
 	const initializePrinter = async () => {
 		setIsInitializing(true);
@@ -249,13 +238,6 @@ export default function PrinterManagement() {
 		}
 	};
 
-	const handleLogout = async () => {
-		const supabase = await createClient();
-		await supabase.auth.signOut();
-		router.push('/admin/login');
-		router.refresh();
-	};
-
 	if (loading) {
 		return (
 			<div className="min-h-screen flex items-center justify-center">
@@ -266,50 +248,6 @@ export default function PrinterManagement() {
 
 	return (
 		<div className="min-h-screen bg-gray-50">
-			<nav className="bg-white shadow">
-				<div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-					<div className="flex justify-between h-16">
-						<div className="flex">
-							<div className="flex-shrink-0 flex items-center">
-								<h1 className="text-xl font-bold">QR Attendance Admin</h1>
-							</div>
-							<div className="hidden sm:ml-6 sm:flex sm:space-x-8">
-								<a
-									href="/admin/dashboard"
-									className="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-								>
-									Dashboard
-								</a>
-								<a
-									href="/admin/participants"
-									className="border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-								>
-									Participants
-								</a>
-								<a
-									href="/admin/printer"
-									className="border-indigo-500 text-gray-900 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
-								>
-									Printer
-								</a>
-							</div>
-						</div>
-						<div className="flex items-center">
-							<div className="flex-shrink-0">
-								<Button onClick={handleLogout} variant="default">
-									Logout
-								</Button>
-							</div>
-							<div className="ml-3 relative">
-								<div className="text-sm text-gray-700">
-									{user?.name || user?.email}
-								</div>
-							</div>
-						</div>
-					</div>
-				</div>
-			</nav>
-
 			<main>
 				<div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
 					<div className="px-4 py-6 sm:px-0">
