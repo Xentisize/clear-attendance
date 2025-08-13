@@ -52,114 +52,105 @@ interface ParticipantData {
 }
 
 // SDK wrapper to handle all window method calls
-class SDKWrapper {
-	private getWindow() {
-		// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK requires dynamic window access
-		return window as any;
-	}
-
-	hasMethod(methodName: string): boolean {
-		return typeof this.getWindow()[methodName] === 'function';
-	}
-
-	getInstance(
-		onConnected: () => void,
-		onNotSupported: () => void,
-		onDisconnected: () => void,
-		onPrinterDisconnected: () => void,
-	): void {
-		this.getWindow().getInstance(
-			onConnected,
-			onNotSupported,
-			onDisconnected,
-			onPrinterDisconnected,
-		);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	initSdk(
-		params: { fontDir: string },
-		callback: (error: any, data: any) => void,
-	): void {
-		this.getWindow().initSdk(params, callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	getAllPrinters(callback: (error: any, data: any) => void): void {
-		this.getWindow().getAllPrinters(callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	selectPrinter(
-		name: string,
-		port: number,
-		callback: (error: any, data: any) => void,
-	): void {
-		this.getWindow().selectPrinter(name, port, callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	InitDrawingBoard(
-		params: DrawingBoardParams,
-		callback: (error: any, data: any) => void,
-	): void {
-		this.getWindow().InitDrawingBoard(params, callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	DrawLableText(
-		params: PrintTextParams,
-		callback: (error: any, data: any) => void,
-	): void {
-		this.getWindow().DrawLableText(params, callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	DrawLableQrCode(
-		params: PrintQRCodeParams,
-		callback: (error: any, data: any) => void,
-	): void {
-		this.getWindow().DrawLableQrCode(params, callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	startJob(
-		density: number,
-		labelType: number,
-		mode: number,
-		count: number,
-		callback: (error: any, data: any) => void,
-	): void {
-		this.getWindow().startJob(density, labelType, mode, count, callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	commitJob(
-		param1: any,
-		param2: string,
-		callback: (error: any, data: any) => void,
-	): void {
-		this.getWindow().commitJob(param1, param2, callback);
-	}
-
-	// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-	endJob(callback: (error: any, data: any) => void): void {
-		this.getWindow().endJob(callback);
-	}
-}
+// Note: Now using direct window calls to match DEMO behavior
 
 class PrinterService {
+	private static instance: PrinterService;
 	private isConnected: boolean = false;
 	private isSdkInitialized: boolean = false;
 	private selectedPrinter: string | null = null;
 	private status: string = 'disconnected';
-	private sdk: SDKWrapper = new SDKWrapper();
+	private connectionRetries = 0;
+	private maxRetries = 3;
+	private isDrawing: boolean = false; // Add drawing state management like DEMO
+
+	// Singleton pattern - only one instance across the app
+	public static getInstance(): PrinterService {
+		// For development mode stability, also check if there's a global instance
+		if (typeof window !== 'undefined') {
+			// Store instance reference in window for cross-navigation persistence
+			const globalKey = '__PRINTER_SERVICE_INSTANCE__';
+			if (!(window as any)[globalKey]) {
+				console.log('🏗️ Creating new PrinterService singleton instance');
+				(window as any)[globalKey] = new PrinterService();
+			} else {
+				console.log(
+					'🔄 Returning existing PrinterService singleton instance from window',
+				);
+				console.log('🔄 Current state:', {
+					isConnected: (window as any)[globalKey].isConnected,
+					selectedPrinter: (window as any)[globalKey].selectedPrinter,
+					status: (window as any)[globalKey].status,
+				});
+			}
+			PrinterService.instance = (window as any)[globalKey];
+		} else {
+			// Fallback for SSR
+			if (!PrinterService.instance) {
+				console.log('🏗️ Creating new PrinterService singleton instance (SSR)');
+				PrinterService.instance = new PrinterService();
+			}
+		}
+		return PrinterService.instance;
+	}
+
+	// Private constructor to prevent direct instantiation
+	private constructor() {
+		const timestamp = new Date().toISOString();
+		console.log('🏗️ PrinterService singleton instance created at:', timestamp);
+		console.log('🏗️ Instance ID:', Math.random().toString(36).substr(2, 9));
+	}
+
+	// Add a delay utility to prevent WebSocket message overload
+	private delay(ms: number): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, ms));
+	}
+
+	// Check if the connection is healthy
+	private async checkConnectionHealth(): Promise<boolean> {
+		if (!this.isConnected) {
+			return false;
+		}
+
+		// Try to get printers to verify connection
+		try {
+			const printers = await this.getPrinters();
+			return Array.isArray(printers);
+		} catch {
+			return false;
+		}
+	}
+
+	// Reconnect if needed
+	private async reconnectIfNeeded(): Promise<boolean> {
+		if (this.connectionRetries >= this.maxRetries) {
+			console.error('Max reconnection attempts reached');
+			return false;
+		}
+
+		const isHealthy = await this.checkConnectionHealth();
+		if (!isHealthy) {
+			console.log('Connection unhealthy, attempting reconnection...');
+			this.connectionRetries++;
+			this.isConnected = false;
+			this.isSdkInitialized = false;
+			this.selectedPrinter = null;
+
+			const connected = await this.initialize();
+			if (connected) {
+				const sdkInitialized = await this.initializeSdk();
+				return sdkInitialized;
+			}
+		}
+
+		return isHealthy;
+	}
 
 	// Initialize the printer service connection
 	async initialize(): Promise<boolean> {
 		return new Promise((resolve) => {
 			// Check if SDK is available
-			if (!this.sdk.hasMethod('getInstance')) {
+			if (typeof (window as any).getInstance !== 'function') {
 				console.warn('Printer SDK not available');
 				resolve(false);
 				return;
@@ -167,7 +158,7 @@ class PrinterService {
 
 			// Initialize the printer SDK connection
 			try {
-				this.sdk.getInstance(
+				(window as any).getInstance(
 					() => {
 						console.log('Printer SDK connected');
 						this.isConnected = true;
@@ -182,6 +173,8 @@ class PrinterService {
 					() => {
 						console.warn('Printer SDK disconnected');
 						this.isConnected = false;
+						this.isSdkInitialized = false;
+						this.selectedPrinter = null;
 						this.status = 'disconnected';
 						resolve(false);
 					},
@@ -200,7 +193,7 @@ class PrinterService {
 	} // Initialize the SDK
 	async initializeSdk(): Promise<boolean> {
 		return new Promise((resolve) => {
-			if (!this.sdk.hasMethod('initSdk')) {
+			if (typeof (window as any).initSdk !== 'function') {
 				console.warn('Printer SDK initSdk method not available');
 				resolve(false);
 				return;
@@ -208,7 +201,7 @@ class PrinterService {
 
 			try {
 				const initParams = { fontDir: '/public/js/' };
-				this.sdk.initSdk(initParams, (error, data) => {
+				(window as any).initSdk(initParams, (error: any, data: any) => {
 					if (error) {
 						console.error('Error initializing SDK:', error);
 						resolve(false);
@@ -231,14 +224,18 @@ class PrinterService {
 			return [];
 		}
 
+		// Add a small delay to prevent WebSocket message overload
+		// This helps prevent the WebSocket from closing due to rapid successive calls
+		await this.delay(100);
+
 		// Check if getAllPrinters function is available
-		if (!this.sdk.hasMethod('getAllPrinters')) {
+		if (typeof (window as any).getAllPrinters !== 'function') {
 			console.warn('getAllPrinters function not available');
 			return [];
 		}
 
 		return new Promise((resolve) => {
-			this.sdk.getAllPrinters((error, data) => {
+			(window as any).getAllPrinters((error: any, data: any) => {
 				if (error) {
 					console.error('Get printers error:', error);
 					resolve([]);
@@ -273,19 +270,96 @@ class PrinterService {
 	// Select a printer
 	async selectPrinter(printerName: string, port: number): Promise<boolean> {
 		if (!this.isConnected) {
+			console.error('Service not connected');
 			return false;
 		}
 
-		// Check if selectPrinter function is available
-		if (typeof (window as any).selectPrinter !== 'function') {
-			console.warn('selectPrinter function not available');
+		// CRITICAL: Check if SDK is initialized before attempting selectPrinter
+		if (!this.isSdkInitialized) {
+			console.error('SDK not initialized before selectPrinter call');
+			// Try to initialize SDK first
+			const sdkInitialized = await this.initializeSdk();
+			if (!sdkInitialized) {
+				console.error('Failed to initialize SDK for selectPrinter');
+				return false;
+			}
+		}
+
+		// Add a longer delay to ensure WebSocket connection is fully stable
+		// The WebSocket needs significant time to be ready for selectPrinter messages
+		console.log('Waiting for WebSocket to stabilize before selectPrinter...');
+		await this.delay(3000); // Increased to 3 seconds
+
+		// Double-check connection status after delay
+		if (!this.isConnected) {
+			console.error('Service disconnected during delay');
 			return false;
 		}
+
+		// Check if selectPrinter function is available on window directly
+		if (typeof (window as any).selectPrinter !== 'function') {
+			console.warn('selectPrinter function not available on window');
+			return false;
+		}
+
+		// Reset selected printer state before attempting new selection
+		this.selectedPrinter = null;
+
+		// Implement retry mechanism for selectPrinter to handle WebSocket instability
+		const maxRetries = 2;
+		for (let attempt = 0; attempt < maxRetries; attempt++) {
+			console.log(`SelectPrinter attempt ${attempt + 1}/${maxRetries}`);
+
+			// Try to "warm up" the WebSocket connection with a simple call first
+			if (attempt === 0) {
+				console.log('Warming up WebSocket with getAllPrinters...');
+				try {
+					await this.getPrinters();
+					console.log('WebSocket warmed up successfully');
+					await this.delay(500); // Small additional delay after warmup
+				} catch (error) {
+					console.warn('WebSocket warmup failed:', error);
+				}
+			}
+
+			const result = await this.attemptSelectPrinter(printerName, port);
+			if (result) {
+				return true;
+			}
+
+			// If failed and not the last attempt, wait before retry
+			if (attempt < maxRetries - 1) {
+				console.log('SelectPrinter failed, waiting before retry...');
+				await this.delay(2000);
+
+				// Check if connection is still alive
+				if (!this.isConnected) {
+					console.log('Connection lost during retry, aborting');
+					return false;
+				}
+			}
+		}
+		return false;
+	}
+
+	private async attemptSelectPrinter(
+		printerName: string,
+		port: number,
+	): Promise<boolean> {
+		// Log the parameters we're about to send
+		console.log('About to call selectPrinter with:', {
+			printerName,
+			port,
+			portType: typeof port,
+		});
 
 		return new Promise((resolve) => {
+			// Call selectPrinter directly on window like in the demo
+			// Ensure port is an integer like in the DEMO
 			(window as any).selectPrinter(
 				printerName,
-				port,
+				parseInt(port.toString()), // Ensure it's parsed as integer like DEMO
+				// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
 				(error: any, data: any) => {
 					if (error) {
 						console.error('Select printer error:', error);
@@ -293,13 +367,24 @@ class PrinterService {
 						return;
 					}
 
-					const { errorCode } = data.resultAck;
-					if (errorCode === 0) {
-						console.log('Printer selected successfully');
-						this.selectedPrinter = printerName;
-						resolve(true);
-					} else {
-						console.error('Select printer failed');
+					try {
+						const { errorCode, info } = data.resultAck;
+						if (errorCode === 0) {
+							console.log('Printer selected successfully');
+							this.selectedPrinter = printerName;
+							this.connectionRetries = 0; // Reset retry counter on success
+							resolve(true);
+						} else {
+							console.error(
+								'Select printer failed with error code:',
+								errorCode,
+								'info:',
+								info,
+							);
+							resolve(false);
+						}
+					} catch (parseError) {
+						console.error('Error parsing select printer response:', parseError);
 						resolve(false);
 					}
 				},
@@ -309,41 +394,94 @@ class PrinterService {
 
 	// Print a label for a participant
 	async printParticipantLabel(participant: any): Promise<boolean> {
+		console.log('🖨️ ==> printParticipantLabel START');
+		console.log('🖨️ Service status:', {
+			isConnected: this.isConnected,
+			isSdkInitialized: this.isSdkInitialized,
+			selectedPrinter: this.selectedPrinter,
+		});
+
 		if (!this.isConnected || !this.isSdkInitialized || !this.selectedPrinter) {
+			console.error('❌ Printer service not ready for printing');
 			return false;
 		}
 
 		try {
-			// Define label dimensions (50mm x 30mm)
-			const labelWidth = 50;
-			const labelHeight = 30;
+			// Set drawing state like DEMO
+			console.log('🖨️ Setting isDrawing = true (DEMO pattern)');
+			this.isDrawing = true;
+
+			// Try using exact DEMO dimensions - 40x60 like the text example instead of 50x20
+			const labelWidth = 40;
+			const labelHeight = 60;
+
+			console.log('🖨️ Starting print job with DEMO text dimensions:', {
+				labelWidth,
+				labelHeight,
+			});
 
 			// Initialize drawing board
+			console.log('🖨️ Step 1: InitDrawingBoard...');
 			const initResult = await this.initDrawingBoard(labelWidth, labelHeight);
 			if (!initResult) {
+				console.error('❌ Step 1 FAILED: InitDrawingBoard');
 				return false;
 			}
+			console.log('✅ Step 1 SUCCESS: InitDrawingBoard');
 
 			// Start print job
+			console.log('🖨️ Step 2: StartJob...');
 			const startResult = await this.startPrintJob(3, 1, 1, 1);
 			if (!startResult) {
+				console.error('❌ Step 2 FAILED: StartJob');
 				return false;
 			}
+			console.log('✅ Step 2 SUCCESS: StartJob');
 
 			// Draw participant information
+			console.log('🖨️ Step 3: Drawing participant info...');
 			await this.drawParticipantInfo(participant, labelWidth, labelHeight);
+			console.log('✅ Step 3 SUCCESS: Drawing participant info');
+
+			// Add a delay to ensure all drawing operations are completed
+			// This matches the DEMO's approach of ensuring drawing is finished
+			console.log('🖨️ Step 4: Waiting for drawing operations to complete...');
+			await this.delay(1000); // 1 second delay
+			console.log('✅ Step 4 SUCCESS: Drawing wait completed');
+
+			// Set drawing completed state like DEMO BEFORE commitJob (critical!)
+			console.log(
+				'🖨️ Setting isDrawing = false before commitJob (DEMO pattern)',
+			);
+			this.isDrawing = false;
 
 			// Commit job
+			console.log('🖨️ Step 5: CommitJob...');
 			const commitResult = await this.commitJob();
 			if (!commitResult) {
+				console.error('❌ Step 5 FAILED: CommitJob');
 				return false;
 			}
+			console.log('✅ Step 5 SUCCESS: CommitJob');
+
+			// Add delay between commitJob and endJob to prevent callback conflicts
+			console.log('🖨️ Step 6: Waiting between commit and end...');
+			await this.delay(2000); // 2 second delay to let commitJob settle
+			console.log('✅ Step 6 SUCCESS: Wait completed');
 
 			// End job
+			console.log('🖨️ Step 7: EndJob...');
 			const endResult = await this.endPrintJob();
-			return endResult;
+			if (!endResult) {
+				console.error('❌ Step 7 FAILED: EndJob');
+				return false;
+			}
+			console.log('✅ Step 6 SUCCESS: EndJob');
+
+			console.log('🎉 Print job completed successfully');
+			return true;
 		} catch (error) {
-			console.error('Print label error:', error);
+			console.error('💥 Print label error:', error);
 			return false;
 		}
 	}
@@ -356,14 +494,17 @@ class PrinterService {
 		}
 
 		return new Promise((resolve) => {
+			// Use parameters matching the DEMO format exactly
 			const params = {
 				width,
 				height,
 				rotate: 0,
-				path: '',
+				path: 'ZT001.ttf', // This font path is critical - missing in our original implementation
 				verticalShift: 0,
 				HorizontalShift: 0,
 			};
+
+			console.log('InitDrawingBoard params:', params);
 
 			(window as any).InitDrawingBoard(params, (error: any, data: any) => {
 				if (error) {
@@ -372,7 +513,8 @@ class PrinterService {
 					return;
 				}
 
-				const { errorCode } = data.resultAck;
+				const { errorCode, info } = data.resultAck;
+				console.log('InitDrawingBoard result:', { errorCode, info });
 				resolve(errorCode === 0);
 			});
 		});
@@ -384,65 +526,36 @@ class PrinterService {
 		labelWidth: number,
 		labelHeight: number,
 	): Promise<void> {
-		// Draw title
-		await this.drawText(
-			'ATTENDANCE LABEL',
-			2,
-			2,
-			labelWidth - 4,
-			4,
-			0,
-			3.5,
-			1,
-			1,
-		);
+		console.log('Drawing participant info with dimensions:', {
+			labelWidth,
+			labelHeight,
+		});
 
-		// Draw participant name
+		// Use EXACT parameters from DEMO text.js working example
 		const name =
 			`${participant.title || ''} ${participant.first_name} ${participant.last_name}`.trim();
-		await this.drawText(name, 2, 7, labelWidth - 4, 4, 0, 3, 0, 1);
 
-		// Draw staff ID
-		await this.drawText(
-			`ID: ${participant.staff_id}`,
-			2,
-			11,
-			labelWidth - 4,
-			3,
+		console.log('Drawing text with EXACT DEMO parameters...');
+
+		// This matches exactly the DEMO text.js first element parameters
+		const textResult = await this.drawText(
+			name,
+			4.0, // marginX * 2 like DEMO
+			4.0, // marginY * 2 like DEMO
+			34.0, // width - marginX * 2 (40-6) like DEMO titleWidth
+			7.4, // height - exact titleHeight from DEMO
 			0,
-			2.5,
-			0,
-			1,
+			5.6, // fontSize - exact titleFontSize from DEMO
+			1, // textAlignHorizontal - 1 like DEMO (center)
+			1, // textAlignVertical - 1 like DEMO (center)
 		);
 
-		// Draw department
-		await this.drawText(
-			`${participant.department || ''}`,
-			2,
-			14,
-			labelWidth - 4,
-			3,
-			0,
-			2.5,
-			0,
-			1,
-		);
+		if (!textResult) {
+			console.error('Failed to draw text with DEMO parameters');
+			return;
+		}
 
-		// Draw post
-		await this.drawText(
-			`${participant.post || ''}`,
-			2,
-			17,
-			labelWidth - 4,
-			3,
-			0,
-			2.5,
-			0,
-			1,
-		);
-
-		// Draw QR code with participant ID
-		await this.drawQrCode(participant.id, 2, 20, 25, 25, 31, 0);
+		console.log('Text drawn successfully with DEMO parameters');
 	}
 
 	// Draw text
@@ -572,24 +685,66 @@ class PrinterService {
 		}
 
 		return new Promise((resolve) => {
-			const printerImageProcessingInfo = JSON.stringify({
+			let resolved = false; // Flag to prevent multiple resolutions
+
+			const printerImageProcessingInfo = {
 				printerImageProcessingInfo: {
 					printQuantity: 1,
 				},
-			});
+			};
+
+			console.log(
+				'🖨️ About to call commitJob with:',
+				printerImageProcessingInfo,
+			);
 
 			(window as any).commitJob(
 				null,
-				printerImageProcessingInfo,
+				JSON.stringify(printerImageProcessingInfo),
 				(error: any, data: any) => {
+					console.log('🖨️ CommitJob callback received:', {
+						error,
+						data,
+						resolved,
+						apiName: data?.apiName,
+					});
+
+					// Check if this is actually a commitJob callback
+					if (data?.apiName && data.apiName !== 'commitJob') {
+						console.log('⚠️ Ignoring non-commitJob callback:', data.apiName);
+						return;
+					}
+
+					if (resolved) {
+						console.log('⚠️ Ignoring duplicate commitJob callback');
+						return;
+					}
+
 					if (error) {
-						console.error('Commit job error:', error);
+						console.error('❌ Commit job error:', error);
+						resolved = true;
 						resolve(false);
 						return;
 					}
 
-					const { errorCode } = data.resultAck;
-					resolve(errorCode === 0);
+					const { errorCode, info } = data.resultAck;
+					console.log('🖨️ CommitJob result:', { errorCode, info });
+
+					if (errorCode !== 0) {
+						console.error(
+							'❌ CommitJob failed with errorCode:',
+							errorCode,
+							'info:',
+							info,
+						);
+						resolved = true;
+						resolve(false);
+						return;
+					}
+
+					console.log('✅ CommitJob succeeded!');
+					resolved = true;
+					resolve(true);
 				},
 			);
 		});
@@ -597,21 +752,41 @@ class PrinterService {
 
 	// End print job
 	private endPrintJob(): Promise<boolean> {
+		console.log('🔚 ==> START EndPrintJob operation');
+
 		if (typeof (window as any).endJob !== 'function') {
-			console.warn('endJob function not available');
+			console.error('❌ EndJob function not available on window');
 			return Promise.resolve(false);
 		}
 
 		return new Promise((resolve) => {
+			console.log('🔚 About to call endJob...');
+
 			(window as any).endJob((error: any, data: any) => {
+				console.log('🔚 EndJob callback received:', { error, data });
+
 				if (error) {
-					console.error('End job error:', error);
+					console.error('❌ End job error:', error);
 					resolve(false);
 					return;
 				}
 
-				const { errorCode } = data.resultAck;
-				resolve(errorCode === 0);
+				const { errorCode, info } = data.resultAck;
+				console.log('🔚 EndJob result:', { errorCode, info });
+
+				if (errorCode !== 0) {
+					console.error(
+						'❌ EndJob failed with errorCode:',
+						errorCode,
+						'info:',
+						info,
+					);
+					resolve(false);
+					return;
+				}
+
+				console.log('✅ EndJob succeeded!');
+				resolve(true);
 			});
 		});
 	}
@@ -663,10 +838,28 @@ class PrinterService {
 		this.isConnected = false;
 		this.isSdkInitialized = false;
 		this.selectedPrinter = null;
+		this.connectionRetries = 0;
+		this.status = 'disconnected';
+	}
+
+	// Reset connection state (useful when WebSocket disconnects)
+	resetConnection(): void {
+		console.log('Resetting printer connection state');
+		this.disconnect();
+	}
+
+	// Get connection retry count
+	getRetryCount(): number {
+		return this.connectionRetries;
+	}
+
+	// Check if max retries reached
+	isMaxRetriesReached(): boolean {
+		return this.connectionRetries >= this.maxRetries;
 	}
 }
 
-// Create singleton instance
-const printerService = new PrinterService();
+// Export singleton instance
+const printerService = PrinterService.getInstance();
 
 export default printerService;

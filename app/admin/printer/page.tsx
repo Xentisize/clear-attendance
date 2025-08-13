@@ -31,6 +31,8 @@ interface PrinterStatus {
 	isSdkInitialized: boolean;
 	selectedPrinter: string | null;
 	availablePrinters: PrinterDevice[];
+	retryCount?: number;
+	maxRetriesReached?: boolean;
 }
 
 export default function PrinterManagement() {
@@ -40,6 +42,8 @@ export default function PrinterManagement() {
 		isSdkInitialized: false,
 		selectedPrinter: null,
 		availablePrinters: [] as PrinterDevice[],
+		retryCount: 0,
+		maxRetriesReached: false,
 	});
 	const [isInitializing, setIsInitializing] = useState(false);
 	const [isRefreshingPrinters, setIsRefreshingPrinters] = useState(false);
@@ -56,6 +60,8 @@ export default function PrinterManagement() {
 			isSdkInitialized: printerService.isSdkInitializedService(),
 			selectedPrinter: printerService.getSelectedPrinter(),
 			availablePrinters: [],
+			retryCount: printerService.getRetryCount(),
+			maxRetriesReached: printerService.isMaxRetriesReached(),
 		};
 
 		if (status.isConnected) {
@@ -176,6 +182,16 @@ export default function PrinterManagement() {
 		setMessage(null);
 
 		try {
+			// Check if service is still connected before selecting
+			if (!printerService.isConnectedService()) {
+				setMessage({
+					type: 'error',
+					text: 'Printer service disconnected. Please reinitialize.',
+				});
+				await checkPrinterStatus();
+				return;
+			}
+
 			const success = await printerService.selectPrinter(
 				printer.name,
 				printer.port,
@@ -185,20 +201,55 @@ export default function PrinterManagement() {
 					type: 'success',
 					text: `Printer "${printer.name}" selected successfully.`,
 				});
-				await checkPrinterStatus();
+				// Update status without calling getPrinters() to avoid WebSocket overload
+				const status: PrinterStatus = {
+					isConnected: printerService.isConnectedService(),
+					isSdkInitialized: printerService.isSdkInitializedService(),
+					selectedPrinter: printerService.getSelectedPrinter(),
+					availablePrinters: printerStatus.availablePrinters, // Keep existing list
+					retryCount: printerService.getRetryCount(),
+					maxRetriesReached: printerService.isMaxRetriesReached(),
+				};
+				setPrinterStatus(status);
 			} else {
+				// Check if we should suggest reconnection
+				const retryCount = printerService.getRetryCount();
+				const maxReached = printerService.isMaxRetriesReached();
+
+				let errorMessage = `Failed to select printer "${printer.name}".`;
+				if (maxReached) {
+					errorMessage +=
+						' Maximum retry attempts reached. Please reinitialize the service.';
+				} else if (retryCount > 0) {
+					errorMessage += ` Retry attempt ${retryCount} failed.`;
+				}
+
 				setMessage({
 					type: 'error',
-					text: `Failed to select printer "${printer.name}".`,
+					text: errorMessage,
 				});
+				await checkPrinterStatus();
 			}
 		} catch (error) {
 			console.error('Error selecting printer:', error);
 			setMessage({
 				type: 'error',
-				text: 'An error occurred while selecting the printer.',
+				text: 'An error occurred while selecting the printer. The connection may have been lost.',
 			});
+			// Reset connection state if there's an error
+			printerService.resetConnection();
+			await checkPrinterStatus();
 		}
+	};
+
+	const resetConnection = async () => {
+		setMessage(null);
+		printerService.resetConnection();
+		setMessage({
+			type: 'info',
+			text: 'Connection reset. Please reinitialize the printer service.',
+		});
+		await checkPrinterStatus();
 	};
 
 	const testPrint = async () => {
@@ -307,6 +358,14 @@ export default function PrinterManagement() {
 													? 'Connected'
 													: 'Disconnected'}
 											</Badge>
+											{((printerStatus.retryCount ?? 0) > 0 ||
+												printerStatus.maxRetriesReached) && (
+												<div className="text-xs text-orange-600 mt-1">
+													{printerStatus.maxRetriesReached
+														? 'Max retries reached'
+														: `Retries: ${printerStatus.retryCount ?? 0}`}
+												</div>
+											)}
 										</div>
 									</div>
 									<div className="flex items-center">
@@ -421,6 +480,18 @@ export default function PrinterManagement() {
 										<RefreshCw className="h-4 w-4" />
 										Refresh Status
 									</Button>
+
+									{((printerStatus.retryCount ?? 0) > 0 ||
+										printerStatus.maxRetriesReached) && (
+										<Button
+											variant="outline"
+											onClick={resetConnection}
+											className="flex items-center gap-2 border-orange-500 text-orange-600 hover:bg-orange-50"
+										>
+											<WifiOff className="h-4 w-4" />
+											Reset Connection
+										</Button>
+									)}
 								</div>
 							</CardContent>
 						</Card>
