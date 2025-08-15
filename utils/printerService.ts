@@ -1,865 +1,741 @@
-// Printer service utility for integrating with the JcPrinter SDK
-// This service handles communication with the printer through the browser plugin
+/**
+ * Brand New Printer Service Based on Successful pc-react Demo
+ * 
+ * This service is a complete rewrite based on the working implementation
+ * found in the pc-react folder, which uses proper WebSocket management,
+ * message routing, and print listener patterns.
+ */
 
-// Type definitions for printer-related data structures
-interface PrinterInfo {
-	name: string;
-	port: number;
-	status: string;
+interface SocketOptions {
+  resetTime: number;
+  timeout: number;
 }
 
-interface PrintTextParams {
-	x: number;
-	y: number;
-	height: number;
-	width: number;
-	value: string;
-	fontFamily: string;
-	rotate: number;
-	fontSize: number;
-	textAlignHorizonral: number;
-	textAlignVertical: number;
-	letterSpacing: number;
-	lineSpacing: number;
-	lineMode: number;
-	fontStyle: boolean[];
+interface PromisePoolItem {
+  timestamp: number;
+  content: any;
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+  timeoutCallback: ReturnType<typeof setTimeout>;
 }
 
-interface PrintQRCodeParams {
-	x: number;
-	y: number;
-	height: number;
-	width: number;
-	value: string;
-	codeType: number;
-	rotate: number;
+interface ApiRequest {
+  apiName: string;
+  parameter?: any;
 }
 
-interface DrawingBoardParams {
-	width: number;
-	height: number;
-	rotate: number;
-	path: string;
-	verticalShift: number;
-	HorizontalShift: number;
+/**
+ * WebSocket Management Class (Based on pc-react/src/Socket.ts)
+ */
+class PrinterSocket {
+  public url: string = "ws://127.0.0.1:37989";
+  public options: SocketOptions = { resetTime: 3000, timeout: 10000 };
+  public customClose: boolean = false;
+  public isProcessingCommitJob: boolean = false;
+  
+  private promisePool: { [key: string]: PromisePoolItem } = {};
+  private _websocket: WebSocket | undefined;
+  public printListeners: Set<(msg: any) => void> = new Set();
+  private openChangeCallback: ((isOpen: boolean) => void) | null = null;
+
+  constructor(options: Partial<SocketOptions> = {}) {
+    this.options = { ...this.options, ...options };
+  }
+
+  private isJSON(str: any): any | boolean {
+    if (typeof str === "string") {
+      try {
+        return JSON.parse(str);
+      } catch (e) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  private closeCallback(): void {
+    if (!this.customClose) {
+      this.isProcessingCommitJob = false;
+      this.close(false);
+      this._websocket = undefined;
+      this.printListeners.clear();
+      
+      const timer = setTimeout(async () => {
+        try {
+          await this.open(this.openChangeCallback || undefined);
+          clearTimeout(timer);
+        } catch (error) {
+          console.error("WebSocket reconnection failed:", error);
+          if (this.openChangeCallback) {
+            this.openChangeCallback(false);
+          }
+        }
+      }, this.options.resetTime);
+      this.customClose = false;
+    }
+  }
+
+  public open(openChange?: (isOpen: boolean) => void): Promise<{ e: Event, ws: PrinterSocket }> {
+    if (openChange) {
+      this.openChangeCallback = openChange;
+    }
+    
+    return new Promise((resolve) => {
+      if (typeof this._websocket === "undefined") {
+        this._websocket = new WebSocket(this.url);
+        
+        this._websocket.onopen = (e: Event) => {
+          console.log("🔗 WebSocket connected successfully");
+          if (openChange) {
+            openChange(true);
+          }
+          resolve({ e, ws: this });
+        };
+        
+        this._websocket.onerror = () => {
+          console.error("❌ WebSocket error occurred");
+          if (openChange) {
+            openChange(false);
+          }
+          this.isProcessingCommitJob = false;
+          this.closeCallback();
+        };
+        
+        this._websocket.onclose = () => {
+          console.log("🔌 WebSocket connection closed");
+          if (openChange) {
+            openChange(false);
+          }
+          this.printListeners.clear();
+          this.closeCallback();
+        };
+        
+        this._websocket.onmessage = (e: MessageEvent) => {
+          const msg = this.isJSON(e.data) ? JSON.parse(e.data as string) : e.data;
+          this.messageRouter(msg);
+        };
+      }
+    });
+  }
+
+  /**
+   * Message Router - Core logic from pc-react demo
+   */
+  private messageRouter(msg: any): void {
+    // Handle commitJob auto-reports
+    const isAutoReport = msg.apiName === 'commitJob';
+    
+    if (msg.apiName && msg.apiName !== 'getPrinterHighLevelInfo' && msg.apiName !== 'printStatus' && !isAutoReport) {
+      // Handle normal API responses
+      this.handleApiResponse(msg);
+    } else if (isAutoReport) {
+      // Handle device auto-reports
+      this.handleEventPush(msg);
+    }
+  }
+
+  private handleApiResponse(msg: any): void {
+    const req = this.promisePool[msg.apiName];
+    if (!req) return;
+
+    if (msg.apiName === 'commitJob') {
+      if (msg.resultAck?.info === 'commitJob ok!') {
+        req.resolve(msg);
+        this.cleanupRequest(msg.apiName, req);
+        this.isProcessingCommitJob = true;
+      }
+    } else {
+      if (msg.resultAck?.errorCode !== 0) {
+        this.isProcessingCommitJob = false;
+      }
+      req.resolve(msg);
+      this.cleanupRequest(msg.apiName, req);
+    }
+  }
+
+  private handleEventPush(msg: any): void {
+    // Send to all print listeners
+    this.printListeners.forEach(listener => listener(msg));
+    
+    // Handle error states
+    if (msg.resultAck?.errorCode !== 0) {
+      this.isProcessingCommitJob = false;
+    }
+  }
+
+  private cleanupRequest(apiName: string, req: PromisePoolItem): void {
+    if (req) {
+      clearTimeout(req.timeoutCallback);
+    }
+    delete this.promisePool[apiName];
+  }
+
+  public close(closing: boolean = true): void {
+    this.customClose = closing;
+    if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
+      this.clearAllListeners();
+      if (this.openChangeCallback) {
+        this.openChangeCallback(false);
+      }
+      this._websocket.close();
+    }
+  }
+
+  public send(content: any, timeout: number | null = null): Promise<any> {
+    const timestamp = new Date().getTime();
+    const timeoutCallback = setTimeout(() => {
+      if (content.apiName === "commitJob") {
+        this.isProcessingCommitJob = true;
+      }
+      const req = this.promisePool[content.apiName];
+      if (req && req.timestamp === timestamp) {
+        req.resolve({
+          apiName: content.apiName,
+          resultAck: { errorCode: 22 },
+          Error: "Request timeout",
+        });
+        clearTimeout(req.timeoutCallback);
+        delete this.promisePool[content.apiName];
+      }
+    }, timeout !== null ? timeout : this.options.timeout);
+
+    return new Promise((resolve, reject) => {
+      this.promisePool[content.apiName] = {
+        timestamp,
+        content,
+        resolve,
+        reject,
+        timeoutCallback,
+      };
+
+      if (this._websocket && this._websocket.readyState === WebSocket.OPEN) {
+        this._websocket.send(JSON.stringify({ ...content }));
+      } else {
+        this.promisePool[content.apiName].resolve({
+          apiName: content.apiName,
+          resultAck: { errorCode: 22 },
+          Error: "WebSocket not connected",
+        });
+      }
+    });
+  }
+
+  public addPrintListener(callback: (msg: any) => void): (msg: any) => void {
+    if (typeof callback !== "function") {
+      console.error("addPrintListener: callback must be a function");
+      return callback;
+    }
+
+    this.printListeners.delete(callback);
+    this.printListeners.add(callback);
+    return callback;
+  }
+
+  public removePrintListener(callback: (msg: any) => void): void {
+    if (!callback) {
+      console.error("removePrintListener: callback is required");
+      return;
+    }
+
+    const removed = this.printListeners.delete(callback);
+    if (!removed) {
+      console.warn("removePrintListener: callback not found in listeners");
+    }
+  }
+
+  public clearAllListeners(): void {
+    const count = this.printListeners.size;
+    this.printListeners.clear();
+    console.log(`Cleared ${count} listeners`);
+  }
+
+  public getStatus(): number | undefined {
+    return this._websocket?.readyState;
+  }
 }
 
-interface ParticipantData {
-	name: string;
-	id: string;
-	department?: string;
-	position?: string;
-}
-
-// SDK wrapper to handle all window method calls
-// Note: Now using direct window calls to match DEMO behavior
-
+/**
+ * Printer Service Class (Based on pc-react patterns)
+ */
 class PrinterService {
-	private static instance: PrinterService;
-	private isConnected: boolean = false;
-	private isSdkInitialized: boolean = false;
-	private selectedPrinter: string | null = null;
-	private status: string = 'disconnected';
-	private connectionRetries = 0;
-	private maxRetries = 3;
-	private isDrawing: boolean = false; // Add drawing state management like DEMO
-
-	// Singleton pattern - only one instance across the app
-	public static getInstance(): PrinterService {
-		// For development mode stability, also check if there's a global instance
-		if (typeof window !== 'undefined') {
-			// Store instance reference in window for cross-navigation persistence
-			const globalKey = '__PRINTER_SERVICE_INSTANCE__';
-			if (!(window as any)[globalKey]) {
-				console.log('🏗️ Creating new PrinterService singleton instance');
-				(window as any)[globalKey] = new PrinterService();
-			} else {
-				console.log(
-					'🔄 Returning existing PrinterService singleton instance from window',
-				);
-				console.log('🔄 Current state:', {
-					isConnected: (window as any)[globalKey].isConnected,
-					selectedPrinter: (window as any)[globalKey].selectedPrinter,
-					status: (window as any)[globalKey].status,
-				});
-			}
-			PrinterService.instance = (window as any)[globalKey];
-		} else {
-			// Fallback for SSR
-			if (!PrinterService.instance) {
-				console.log('🏗️ Creating new PrinterService singleton instance (SSR)');
-				PrinterService.instance = new PrinterService();
-			}
-		}
-		return PrinterService.instance;
-	}
-
-	// Private constructor to prevent direct instantiation
-	private constructor() {
-		const timestamp = new Date().toISOString();
-		console.log('🏗️ PrinterService singleton instance created at:', timestamp);
-		console.log('🏗️ Instance ID:', Math.random().toString(36).substr(2, 9));
-	}
-
-	// Add a delay utility to prevent WebSocket message overload
-	private delay(ms: number): Promise<void> {
-		return new Promise((resolve) => setTimeout(resolve, ms));
-	}
-
-	// Check if the connection is healthy
-	private async checkConnectionHealth(): Promise<boolean> {
-		if (!this.isConnected) {
-			return false;
-		}
-
-		// Try to get printers to verify connection
-		try {
-			const printers = await this.getPrinters();
-			return Array.isArray(printers);
-		} catch {
-			return false;
-		}
-	}
-
-	// Reconnect if needed
-	private async reconnectIfNeeded(): Promise<boolean> {
-		if (this.connectionRetries >= this.maxRetries) {
-			console.error('Max reconnection attempts reached');
-			return false;
-		}
-
-		const isHealthy = await this.checkConnectionHealth();
-		if (!isHealthy) {
-			console.log('Connection unhealthy, attempting reconnection...');
-			this.connectionRetries++;
-			this.isConnected = false;
-			this.isSdkInitialized = false;
-			this.selectedPrinter = null;
-
-			const connected = await this.initialize();
-			if (connected) {
-				const sdkInitialized = await this.initializeSdk();
-				return sdkInitialized;
-			}
-		}
-
-		return isHealthy;
-	}
-
-	// Initialize the printer service connection
-	async initialize(): Promise<boolean> {
-		return new Promise((resolve) => {
-			// Check if SDK is available
-			if (typeof (window as any).getInstance !== 'function') {
-				console.warn('Printer SDK not available');
-				resolve(false);
-				return;
-			}
-
-			// Initialize the printer SDK connection
-			try {
-				(window as any).getInstance(
-					() => {
-						console.log('Printer SDK connected');
-						this.isConnected = true;
-						this.status = 'connected';
-						resolve(true);
-					},
-					() => {
-						console.warn('Printer SDK not supported');
-						this.status = 'not_supported';
-						resolve(false);
-					},
-					() => {
-						console.warn('Printer SDK disconnected');
-						this.isConnected = false;
-						this.isSdkInitialized = false;
-						this.selectedPrinter = null;
-						this.status = 'disconnected';
-						resolve(false);
-					},
-					() => {
-						console.warn('Printer disconnected');
-						this.selectedPrinter = null;
-						this.status = 'printer_disconnected';
-					},
-				);
-			} catch (error) {
-				console.error('Error initializing printer SDK:', error);
-				this.status = 'error';
-				resolve(false);
-			}
-		});
-	} // Initialize the SDK
-	async initializeSdk(): Promise<boolean> {
-		return new Promise((resolve) => {
-			if (typeof (window as any).initSdk !== 'function') {
-				console.warn('Printer SDK initSdk method not available');
-				resolve(false);
-				return;
-			}
-
-			try {
-				const initParams = { fontDir: '/public/js/' };
-				(window as any).initSdk(initParams, (error: any, data: any) => {
-					if (error) {
-						console.error('Error initializing SDK:', error);
-						resolve(false);
-					} else {
-						console.log('SDK initialized successfully:', data);
-						this.isSdkInitialized = true;
-						resolve(true);
-					}
-				});
-			} catch (error) {
-				console.error('Error calling initSdk:', error);
-				resolve(false);
-			}
-		});
-	}
-
-	// Get list of available printers
-	async getPrinters(): Promise<PrinterInfo[]> {
-		if (!this.isConnected) {
-			return [];
-		}
-
-		// Add a small delay to prevent WebSocket message overload
-		// This helps prevent the WebSocket from closing due to rapid successive calls
-		await this.delay(100);
-
-		// Check if getAllPrinters function is available
-		if (typeof (window as any).getAllPrinters !== 'function') {
-			console.warn('getAllPrinters function not available');
-			return [];
-		}
-
-		return new Promise((resolve) => {
-			(window as any).getAllPrinters((error: any, data: any) => {
-				if (error) {
-					console.error('Get printers error:', error);
-					resolve([]);
-					return;
-				}
-
-				const result = data as {
-					resultAck: { errorCode: number; info: string };
-				};
-				const { errorCode, info } = result.resultAck;
-				if (errorCode === 0) {
-					try {
-						const printers = JSON.parse(info) as Record<string, number>;
-						resolve(
-							Object.keys(printers).map((name) => ({
-								name,
-								port: printers[name],
-								status: 'available',
-							})),
-						);
-					} catch (e) {
-						console.error('Error parsing printer info:', e);
-						resolve([]);
-					}
-				} else {
-					resolve([]);
-				}
-			});
-		});
-	}
-
-	// Select a printer
-	async selectPrinter(printerName: string, port: number): Promise<boolean> {
-		if (!this.isConnected) {
-			console.error('Service not connected');
-			return false;
-		}
-
-		// CRITICAL: Check if SDK is initialized before attempting selectPrinter
-		if (!this.isSdkInitialized) {
-			console.error('SDK not initialized before selectPrinter call');
-			// Try to initialize SDK first
-			const sdkInitialized = await this.initializeSdk();
-			if (!sdkInitialized) {
-				console.error('Failed to initialize SDK for selectPrinter');
-				return false;
-			}
-		}
-
-		// Add a longer delay to ensure WebSocket connection is fully stable
-		// The WebSocket needs significant time to be ready for selectPrinter messages
-		console.log('Waiting for WebSocket to stabilize before selectPrinter...');
-		await this.delay(3000); // Increased to 3 seconds
-
-		// Double-check connection status after delay
-		if (!this.isConnected) {
-			console.error('Service disconnected during delay');
-			return false;
-		}
-
-		// Check if selectPrinter function is available on window directly
-		if (typeof (window as any).selectPrinter !== 'function') {
-			console.warn('selectPrinter function not available on window');
-			return false;
-		}
-
-		// Reset selected printer state before attempting new selection
-		this.selectedPrinter = null;
-
-		// Implement retry mechanism for selectPrinter to handle WebSocket instability
-		const maxRetries = 2;
-		for (let attempt = 0; attempt < maxRetries; attempt++) {
-			console.log(`SelectPrinter attempt ${attempt + 1}/${maxRetries}`);
-
-			// Try to "warm up" the WebSocket connection with a simple call first
-			if (attempt === 0) {
-				console.log('Warming up WebSocket with getAllPrinters...');
-				try {
-					await this.getPrinters();
-					console.log('WebSocket warmed up successfully');
-					await this.delay(500); // Small additional delay after warmup
-				} catch (error) {
-					console.warn('WebSocket warmup failed:', error);
-				}
-			}
-
-			const result = await this.attemptSelectPrinter(printerName, port);
-			if (result) {
-				return true;
-			}
-
-			// If failed and not the last attempt, wait before retry
-			if (attempt < maxRetries - 1) {
-				console.log('SelectPrinter failed, waiting before retry...');
-				await this.delay(2000);
-
-				// Check if connection is still alive
-				if (!this.isConnected) {
-					console.log('Connection lost during retry, aborting');
-					return false;
-				}
-			}
-		}
-		return false;
-	}
-
-	private async attemptSelectPrinter(
-		printerName: string,
-		port: number,
-	): Promise<boolean> {
-		// Log the parameters we're about to send
-		console.log('About to call selectPrinter with:', {
-			printerName,
-			port,
-			portType: typeof port,
-		});
-
-		return new Promise((resolve) => {
-			// Call selectPrinter directly on window like in the demo
-			// Ensure port is an integer like in the DEMO
-			(window as any).selectPrinter(
-				printerName,
-				parseInt(port.toString()), // Ensure it's parsed as integer like DEMO
-				// biome-ignore lint/suspicious/noExplicitAny: Third-party SDK callback types
-				(error: any, data: any) => {
-					if (error) {
-						console.error('Select printer error:', error);
-						resolve(false);
-						return;
-					}
-
-					try {
-						const { errorCode, info } = data.resultAck;
-						if (errorCode === 0) {
-							console.log('Printer selected successfully');
-							this.selectedPrinter = printerName;
-							this.connectionRetries = 0; // Reset retry counter on success
-							resolve(true);
-						} else {
-							console.error(
-								'Select printer failed with error code:',
-								errorCode,
-								'info:',
-								info,
-							);
-							resolve(false);
-						}
-					} catch (parseError) {
-						console.error('Error parsing select printer response:', parseError);
-						resolve(false);
-					}
-				},
-			);
-		});
-	}
-
-	// Print a label for a participant
-	async printParticipantLabel(participant: any): Promise<boolean> {
-		console.log('🖨️ ==> printParticipantLabel START');
-		console.log('🖨️ Service status:', {
-			isConnected: this.isConnected,
-			isSdkInitialized: this.isSdkInitialized,
-			selectedPrinter: this.selectedPrinter,
-		});
-
-		if (!this.isConnected || !this.isSdkInitialized || !this.selectedPrinter) {
-			console.error('❌ Printer service not ready for printing');
-			return false;
-		}
-
-		try {
-			// Set drawing state like DEMO
-			console.log('🖨️ Setting isDrawing = true (DEMO pattern)');
-			this.isDrawing = true;
-
-			// Try using exact DEMO dimensions - 40x60 like the text example instead of 50x20
-			const labelWidth = 40;
-			const labelHeight = 60;
-
-			console.log('🖨️ Starting print job with DEMO text dimensions:', {
-				labelWidth,
-				labelHeight,
-			});
-
-			// Initialize drawing board
-			console.log('🖨️ Step 1: InitDrawingBoard...');
-			const initResult = await this.initDrawingBoard(labelWidth, labelHeight);
-			if (!initResult) {
-				console.error('❌ Step 1 FAILED: InitDrawingBoard');
-				return false;
-			}
-			console.log('✅ Step 1 SUCCESS: InitDrawingBoard');
-
-			// Start print job
-			console.log('🖨️ Step 2: StartJob...');
-			const startResult = await this.startPrintJob(3, 1, 1, 1);
-			if (!startResult) {
-				console.error('❌ Step 2 FAILED: StartJob');
-				return false;
-			}
-			console.log('✅ Step 2 SUCCESS: StartJob');
-
-			// Draw participant information
-			console.log('🖨️ Step 3: Drawing participant info...');
-			await this.drawParticipantInfo(participant, labelWidth, labelHeight);
-			console.log('✅ Step 3 SUCCESS: Drawing participant info');
-
-			// Add a delay to ensure all drawing operations are completed
-			// This matches the DEMO's approach of ensuring drawing is finished
-			console.log('🖨️ Step 4: Waiting for drawing operations to complete...');
-			await this.delay(1000); // 1 second delay
-			console.log('✅ Step 4 SUCCESS: Drawing wait completed');
-
-			// Set drawing completed state like DEMO BEFORE commitJob (critical!)
-			console.log(
-				'🖨️ Setting isDrawing = false before commitJob (DEMO pattern)',
-			);
-			this.isDrawing = false;
-
-			// Commit job
-			console.log('🖨️ Step 5: CommitJob...');
-			const commitResult = await this.commitJob();
-			if (!commitResult) {
-				console.error('❌ Step 5 FAILED: CommitJob');
-				return false;
-			}
-			console.log('✅ Step 5 SUCCESS: CommitJob');
-
-			// Add delay between commitJob and endJob to prevent callback conflicts
-			console.log('🖨️ Step 6: Waiting between commit and end...');
-			await this.delay(2000); // 2 second delay to let commitJob settle
-			console.log('✅ Step 6 SUCCESS: Wait completed');
-
-			// End job
-			console.log('🖨️ Step 7: EndJob...');
-			const endResult = await this.endPrintJob();
-			if (!endResult) {
-				console.error('❌ Step 7 FAILED: EndJob');
-				return false;
-			}
-			console.log('✅ Step 6 SUCCESS: EndJob');
-
-			console.log('🎉 Print job completed successfully');
-			return true;
-		} catch (error) {
-			console.error('💥 Print label error:', error);
-			return false;
-		}
-	}
-
-	// Initialize drawing board
-	private initDrawingBoard(width: number, height: number): Promise<boolean> {
-		if (typeof (window as any).InitDrawingBoard !== 'function') {
-			console.warn('InitDrawingBoard function not available');
-			return Promise.resolve(false);
-		}
-
-		return new Promise((resolve) => {
-			// Use parameters matching the DEMO format exactly
-			const params = {
-				width,
-				height,
-				rotate: 0,
-				path: 'ZT001.ttf', // This font path is critical - missing in our original implementation
-				verticalShift: 0,
-				HorizontalShift: 0,
-			};
-
-			console.log('InitDrawingBoard params:', params);
-
-			(window as any).InitDrawingBoard(params, (error: any, data: any) => {
-				if (error) {
-					console.error('Init drawing board error:', error);
-					resolve(false);
-					return;
-				}
-
-				const { errorCode, info } = data.resultAck;
-				console.log('InitDrawingBoard result:', { errorCode, info });
-				resolve(errorCode === 0);
-			});
-		});
-	}
-
-	// Draw participant information on the label
-	private async drawParticipantInfo(
-		participant: any,
-		labelWidth: number,
-		labelHeight: number,
-	): Promise<void> {
-		console.log('Drawing participant info with dimensions:', {
-			labelWidth,
-			labelHeight,
-		});
-
-		// Use EXACT parameters from DEMO text.js working example
-		const name =
-			`${participant.title || ''} ${participant.first_name} ${participant.last_name}`.trim();
-
-		console.log('Drawing text with EXACT DEMO parameters...');
-
-		// This matches exactly the DEMO text.js first element parameters
-		const textResult = await this.drawText(
-			name,
-			4.0, // marginX * 2 like DEMO
-			4.0, // marginY * 2 like DEMO
-			34.0, // width - marginX * 2 (40-6) like DEMO titleWidth
-			7.4, // height - exact titleHeight from DEMO
-			0,
-			5.6, // fontSize - exact titleFontSize from DEMO
-			1, // textAlignHorizontal - 1 like DEMO (center)
-			1, // textAlignVertical - 1 like DEMO (center)
-		);
-
-		if (!textResult) {
-			console.error('Failed to draw text with DEMO parameters');
-			return;
-		}
-
-		console.log('Text drawn successfully with DEMO parameters');
-	}
-
-	// Draw text
-	private drawText(
-		value: string,
-		x: number,
-		y: number,
-		width: number,
-		height: number,
-		rotate: number,
-		fontSize: number,
-		textAlignHorizontal: number,
-		textAlignVertical: number,
-	): Promise<boolean> {
-		if (typeof (window as any).DrawLableText !== 'function') {
-			console.warn('DrawLableText function not available');
-			return Promise.resolve(false);
-		}
-
-		return new Promise((resolve) => {
-			const params = {
-				x,
-				y,
-				width,
-				height,
-				value,
-				fontFamily: '宋体',
-				rotate,
-				fontSize,
-				textAlignHorizonral: textAlignHorizontal,
-				textAlignVertical,
-				letterSpacing: 0.0,
-				lineSpacing: 1.0,
-				lineMode: 6,
-				fontStyle: [false, false, false, false],
-			};
-
-			(window as any).DrawLableText(params, (error: any, data: any) => {
-				if (error) {
-					console.error('Draw text error:', error);
-					resolve(false);
-					return;
-				}
-
-				const { errorCode } = data.resultAck;
-				resolve(errorCode === 0);
-			});
-		});
-	}
-
-	// Draw QR code
-	private drawQrCode(
-		value: string,
-		x: number,
-		y: number,
-		width: number,
-		height: number,
-		codeType: number,
-		rotate: number,
-	): Promise<boolean> {
-		if (typeof (window as any).DrawLableQrCode !== 'function') {
-			console.warn('DrawLableQrCode function not available');
-			return Promise.resolve(false);
-		}
-
-		return new Promise((resolve) => {
-			const params = {
-				x,
-				y,
-				width,
-				height,
-				value,
-				codeType,
-				rotate,
-			};
-
-			(window as any).DrawLableQrCode(params, (error: any, data: any) => {
-				if (error) {
-					console.error('Draw QR code error:', error);
-					resolve(false);
-					return;
-				}
-
-				const { errorCode } = data.resultAck;
-				resolve(errorCode === 0);
-			});
-		});
-	}
-
-	// Start print job
-	private startPrintJob(
-		printDensity: number,
-		printLabelType: number,
-		printMode: number,
-		count: number,
-	): Promise<boolean> {
-		if (typeof (window as any).startJob !== 'function') {
-			console.warn('startJob function not available');
-			return Promise.resolve(false);
-		}
-
-		return new Promise((resolve) => {
-			(window as any).startJob(
-				printDensity,
-				printLabelType,
-				printMode,
-				count,
-				(error: any, data: any) => {
-					if (error) {
-						console.error('Start job error:', error);
-						resolve(false);
-						return;
-					}
-
-					const { errorCode } = data.resultAck;
-					resolve(errorCode === 0);
-				},
-			);
-		});
-	}
-
-	// Commit job
-	private commitJob(): Promise<boolean> {
-		if (typeof (window as any).commitJob !== 'function') {
-			console.warn('commitJob function not available');
-			return Promise.resolve(false);
-		}
-
-		return new Promise((resolve) => {
-			let resolved = false; // Flag to prevent multiple resolutions
-
-			const printerImageProcessingInfo = {
-				printerImageProcessingInfo: {
-					printQuantity: 1,
-				},
-			};
-
-			console.log(
-				'🖨️ About to call commitJob with:',
-				printerImageProcessingInfo,
-			);
-
-			(window as any).commitJob(
-				null,
-				JSON.stringify(printerImageProcessingInfo),
-				(error: any, data: any) => {
-					console.log('🖨️ CommitJob callback received:', {
-						error,
-						data,
-						resolved,
-						apiName: data?.apiName,
-					});
-
-					// Check if this is actually a commitJob callback
-					if (data?.apiName && data.apiName !== 'commitJob') {
-						console.log('⚠️ Ignoring non-commitJob callback:', data.apiName);
-						return;
-					}
-
-					if (resolved) {
-						console.log('⚠️ Ignoring duplicate commitJob callback');
-						return;
-					}
-
-					if (error) {
-						console.error('❌ Commit job error:', error);
-						resolved = true;
-						resolve(false);
-						return;
-					}
-
-					const { errorCode, info } = data.resultAck;
-					console.log('🖨️ CommitJob result:', { errorCode, info });
-
-					if (errorCode !== 0) {
-						console.error(
-							'❌ CommitJob failed with errorCode:',
-							errorCode,
-							'info:',
-							info,
-						);
-						resolved = true;
-						resolve(false);
-						return;
-					}
-
-					console.log('✅ CommitJob succeeded!');
-					resolved = true;
-					resolve(true);
-				},
-			);
-		});
-	}
-
-	// End print job
-	private endPrintJob(): Promise<boolean> {
-		console.log('🔚 ==> START EndPrintJob operation');
-
-		if (typeof (window as any).endJob !== 'function') {
-			console.error('❌ EndJob function not available on window');
-			return Promise.resolve(false);
-		}
-
-		return new Promise((resolve) => {
-			console.log('🔚 About to call endJob...');
-
-			(window as any).endJob((error: any, data: any) => {
-				console.log('🔚 EndJob callback received:', { error, data });
-
-				if (error) {
-					console.error('❌ End job error:', error);
-					resolve(false);
-					return;
-				}
-
-				const { errorCode, info } = data.resultAck;
-				console.log('🔚 EndJob result:', { errorCode, info });
-
-				if (errorCode !== 0) {
-					console.error(
-						'❌ EndJob failed with errorCode:',
-						errorCode,
-						'info:',
-						info,
-					);
-					resolve(false);
-					return;
-				}
-
-				console.log('✅ EndJob succeeded!');
-				resolve(true);
-			});
-		});
-	}
-
-	// Check if service is connected
-	isConnectedService(): boolean {
-		return this.isConnected;
-	}
-
-	// Check if SDK is initialized
-	isSdkInitializedService(): boolean {
-		return this.isSdkInitialized;
-	}
-
-	// Get selected printer
-	getSelectedPrinter(): string | null {
-		return this.selectedPrinter;
-	}
-
-	// Get printer status information
-	getPrinterStatus(): {
-		isConnected: boolean;
-		isSdkInitialized: boolean;
-		selectedPrinter: string | null;
-		hasRequiredFunctions: boolean;
-	} {
-		const hasRequiredFunctions =
-			typeof window !== 'undefined' &&
-			typeof (window as any).getInstance === 'function' &&
-			typeof (window as any).initSdk === 'function' &&
-			typeof (window as any).getAllPrinters === 'function' &&
-			typeof (window as any).selectPrinter === 'function';
-
-		return {
-			isConnected: this.isConnected,
-			isSdkInitialized: this.isSdkInitialized,
-			selectedPrinter: this.selectedPrinter,
-			hasRequiredFunctions,
-		};
-	}
-
-	// Test if the printer service is fully ready
-	isFullyReady(): boolean {
-		return this.isConnected && this.isSdkInitialized && !!this.selectedPrinter;
-	}
-
-	// Disconnect from printer service
-	disconnect(): void {
-		this.isConnected = false;
-		this.isSdkInitialized = false;
-		this.selectedPrinter = null;
-		this.connectionRetries = 0;
-		this.status = 'disconnected';
-	}
-
-	// Reset connection state (useful when WebSocket disconnects)
-	resetConnection(): void {
-		console.log('Resetting printer connection state');
-		this.disconnect();
-	}
-
-	// Get connection retry count
-	getRetryCount(): number {
-		return this.connectionRetries;
-	}
-
-	// Check if max retries reached
-	isMaxRetriesReached(): boolean {
-		return this.connectionRetries >= this.maxRetries;
-	}
+  private socket: PrinterSocket;
+  private isConnected: boolean = false;
+  private isSdkInitialized: boolean = false;
+  private selectedPrinter: string | null = null;
+  private selectedPort: number | null = null;
+  private isPrinting: boolean = false;
+
+  // Print configuration matching pc-react demo
+  private jsonObj = {
+    printerImageProcessingInfo: {
+      printQuantity: 1,
+    },
+  };
+
+  // Print settings
+  private density: number = 3;
+  private labelType: number = 1;
+  private printMode: number = 1;
+
+  constructor() {
+    this.socket = new PrinterSocket();
+  }
+
+  /**
+   * Initialize connection to print service
+   */
+  public async connect(): Promise<boolean> {
+    try {
+      console.log('🔗 Connecting to printer service...');
+      
+      await this.socket.open((isOpen: boolean) => {
+        this.isConnected = isOpen;
+        console.log(`🔗 WebSocket connection: ${isOpen ? 'OPEN' : 'CLOSED'}`);
+      });
+
+      console.log('✅ Successfully connected to printer service');
+      return true;
+    } catch (error) {
+      console.error('❌ Failed to connect to printer service:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Initialize SDK
+   */
+  public async initializeSdk(): Promise<boolean> {
+    if (!this.isConnected) {
+      console.error('❌ Cannot initialize SDK - not connected');
+      return false;
+    }
+
+    try {
+      console.log('🔧 Initializing SDK...');
+      
+      const response = await this.socket.send({
+        apiName: "initSdk",
+        parameter: { fontDir: "" }
+      });
+
+      const result = JSON.parse(response.resultAck.errorCode);
+      if (result === 0) {
+        this.isSdkInitialized = true;
+        console.log('✅ SDK initialized successfully');
+        return true;
+      } else {
+        console.error('❌ SDK initialization failed:', response);
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ SDK initialization error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get all available printers
+   */
+  public async getAllPrinters(): Promise<{ [key: string]: string }> {
+    if (!this.isConnected) {
+      throw new Error('Printer service not connected');
+    }
+
+    try {
+      console.log('🔍 Getting all printers...');
+      
+      const response = await this.socket.send({ apiName: "getAllPrinters" });
+      
+      if (response.resultAck.errorCode === 0) {
+        const printers = JSON.parse(response.resultAck.info);
+        console.log('✅ Found printers:', printers);
+        return printers;
+      } else {
+        console.warn('⚠️ No printers found');
+        return {};
+      }
+    } catch (error) {
+      console.error('❌ Error getting printers:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Select and connect to a printer
+   */
+  public async selectPrinter(printerName: string, port: number): Promise<boolean> {
+    if (!this.isConnected) {
+      throw new Error('Printer service not connected');
+    }
+
+    try {
+      console.log(`🖨️ Selecting printer: ${printerName}:${port}`);
+      
+      const response = await this.socket.send({
+        apiName: "selectPrinter",
+        parameter: {
+          printerName: printerName,
+          port: port,
+        },
+      });
+
+      const result = JSON.parse(response.resultAck.errorCode);
+      if (result === 0) {
+        this.selectedPrinter = printerName;
+        this.selectedPort = port;
+        console.log('✅ Printer selected successfully');
+        return true;
+      } else {
+        console.error('❌ Failed to select printer:', response);
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ Error selecting printer:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize drawing board
+   */
+  private async initDrawingBoard(params: any): Promise<boolean> {
+    try {
+      const response = await this.socket.send({
+        apiName: "InitDrawingBoard",
+        parameter: params,
+      });
+      return response.resultAck.errorCode === 0;
+    } catch (error) {
+      console.error('❌ Error initializing drawing board:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Draw label text
+   */
+  private async drawLabelText(params: any): Promise<boolean> {
+    try {
+      const response = await this.socket.send({
+        apiName: "DrawLableText",
+        parameter: params,
+      });
+      return parseInt(JSON.parse(response.resultAck.errorCode)) === 0;
+    } catch (error) {
+      console.error('❌ Error drawing text:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Print participant badge (main public method)
+   */
+  public async printParticipantBadge(participantData: {
+    name: string;
+    id: string;
+    department: string;
+  }): Promise<boolean> {
+    if (!this.isReady()) {
+      throw new Error('Printer not ready. Please connect, initialize SDK, and select a printer first.');
+    }
+
+    console.log('🖨️ Starting participant badge print...');
+    
+    try {
+      // Set up print listener
+      let printListener: ((msg: any) => void) | null = null;
+      let isCompleted = false;
+      
+      const printPromise = new Promise<boolean>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          if (!isCompleted) {
+            console.warn('⏰ Print job timeout');
+            cleanup();
+            resolve(false);
+          }
+        }, 30000);
+
+        const cleanup = () => {
+          if (printListener) {
+            this.socket.removePrintListener(printListener);
+            printListener = null;
+          }
+          clearTimeout(timeout);
+        };
+
+        printListener = this.socket.addPrintListener(async (msg) => {
+          const resultAck = msg?.resultAck;
+          console.log('📨 Print listener received:', resultAck);
+
+          if (resultAck?.errorCode === 0 && resultAck?.info === 'commitJob ok!') {
+            console.log('✅ Commit job successful');
+          }
+
+          // Check completion
+          if (resultAck?.printCopies >= 1 && resultAck?.printPages >= 1) {
+            console.log('🏁 Print job complete, ending job...');
+            try {
+              if (this.socket.getStatus() === WebSocket.OPEN) {
+                await this.socket.send({ apiName: 'endJob' });
+                console.log('✅ Print job ended successfully');
+              }
+              isCompleted = true;
+              cleanup();
+              resolve(true);
+            } catch (error) {
+              console.error('❌ Error ending job:', error);
+              isCompleted = true;
+              cleanup();
+              resolve(false);
+            }
+          }
+
+          if (resultAck?.errorCode !== 0) {
+            console.error('❌ Print error:', resultAck?.info);
+            cleanup();
+            reject(new Error(resultAck?.info || 'Print failed'));
+          }
+        });
+
+        // Start the print process
+        this.executePrintJob(participantData).catch(reject);
+      });
+
+      const result = await printPromise;
+      console.log(`🖨️ Print job ${result ? 'completed successfully' : 'failed'}`);
+      return result;
+
+    } catch (error) {
+      console.error('❌ Print job failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Execute the actual print job
+   */
+  private async executePrintJob(participantData: {
+    name: string;
+    id: string;
+    department: string;
+  }): Promise<void> {
+    console.log('🎯 Executing print job...');
+
+    // Step 1: Start print job
+    const startResponse = await this.socket.send({
+      apiName: "startJob",
+      parameter: {
+        printDensity: this.density,
+        printLabelType: this.labelType,
+        printMode: this.printMode,
+        count: this.jsonObj.printerImageProcessingInfo.printQuantity,
+      },
+    });
+
+    if (startResponse.resultAck.errorCode !== 0) {
+      throw new Error('Failed to start print job');
+    }
+
+    // Step 2: Initialize drawing board (54mm x 25mm label)
+    const canvasSuccess = await this.initDrawingBoard({
+      width: 54,
+      height: 25,
+      rotate: 0,
+      path: "",
+      verticalShift: 0,
+      HorizontalShift: 0
+    });
+
+    if (!canvasSuccess) {
+      throw new Error('Failed to initialize drawing board');
+    }
+
+    // Step 3: Draw text elements
+    const textElements = [
+      {
+        x: 2,
+        y: 2,
+        height: 6,
+        width: 50,
+        value: participantData.name,
+        fontSize: 4,
+        rotate: 0,
+        textAlignHorizonral: 1, // Center
+        textAlignVertical: 1,   // Middle
+        lineMode: 6,
+        fontStyle: 1 // Bold
+      },
+      {
+        x: 2,
+        y: 9,
+        height: 4,
+        width: 50,
+        value: `ID: ${participantData.id}`,
+        fontSize: 2.5,
+        rotate: 0,
+        textAlignHorizonral: 1,
+        textAlignVertical: 1,
+        lineMode: 6,
+        fontStyle: 0
+      },
+      {
+        x: 2,
+        y: 15,
+        height: 4,
+        width: 50,
+        value: participantData.department,
+        fontSize: 2,
+        rotate: 0,
+        textAlignHorizonral: 1,
+        textAlignVertical: 1,
+        lineMode: 6,
+        fontStyle: 0
+      }
+    ];
+
+    for (const element of textElements) {
+      const success = await this.drawLabelText(element);
+      if (!success) {
+        throw new Error('Failed to draw text element');
+      }
+    }
+
+    // Step 4: Commit job (exactly like pc-react demo)
+    console.log('📤 Committing print job...');
+    await this.socket.send({
+      apiName: "commitJob",
+      parameter: {
+        printData: undefined, // Exactly like pc-react demo
+        printerImageProcessingInfo: this.jsonObj.printerImageProcessingInfo, // Not JSON string
+      },
+    });
+  }
+
+  /**
+   * Check if printer service is ready
+   */
+  public isReady(): boolean {
+    return this.isConnected && this.isSdkInitialized && !!this.selectedPrinter;
+  }
+
+  /**
+   * Get connection status
+   */
+  public getConnectionStatus(): {
+    isConnected: boolean;
+    isSdkInitialized: boolean;
+    selectedPrinter: string | null;
+    socketStatus: number | undefined;
+  } {
+    return {
+      isConnected: this.isConnected,
+      isSdkInitialized: this.isSdkInitialized,
+      selectedPrinter: this.selectedPrinter,
+      socketStatus: this.socket.getStatus(),
+    };
+  }
+
+  /**
+   * Disconnect from printer service
+   */
+  public disconnect(): void {
+    this.socket.close(true);
+    this.isConnected = false;
+    this.isSdkInitialized = false;
+    this.selectedPrinter = null;
+    this.selectedPort = null;
+    console.log('🔌 Printer service disconnected');
+  }
+
+  /**
+   * Set print density
+   */
+  public setPrintDensity(density: number): void {
+    this.density = density;
+  }
+
+  /**
+   * Set label type
+   */
+  public setLabelType(labelType: number): void {
+    this.labelType = labelType;
+  }
+
+  /**
+   * Set print mode
+   */
+  public setPrintMode(printMode: number): void {
+    this.printMode = printMode;
+  }
+
+  // Backward compatibility methods for existing admin page
+  public async initialize(): Promise<boolean> {
+    return await this.connect();
+  }
+
+  public isConnectedService(): boolean {
+    return this.isConnected;
+  }
+
+  public isSdkInitializedService(): boolean {
+    return this.isSdkInitialized;
+  }
+
+  public getSelectedPrinter(): string | null {
+    return this.selectedPrinter;
+  }
+
+  public async getPrinters(): Promise<Array<{name: string; port: number; status: string}>> {
+    try {
+      const printers = await this.getAllPrinters();
+      return Object.keys(printers).map(name => ({
+        name,
+        port: parseInt(printers[name]),
+        status: 'available'
+      }));
+    } catch (error) {
+      console.error('Error getting printers:', error);
+      return [];
+    }
+  }
+
+  public async printParticipantLabel(participant: any): Promise<boolean> {
+    // Map old participant structure to new structure
+    const participantData = {
+      name: `${participant.title || ''} ${participant.first_name} ${participant.last_name}`.trim(),
+      id: participant.staff_id || participant.id,
+      department: participant.department || 'N/A'
+    };
+    
+    return await this.printParticipantBadge(participantData);
+  }
+
+  public getRetryCount(): number {
+    // Return 0 for compatibility - new service handles retries internally
+    return 0;
+  }
+
+  public isMaxRetriesReached(): boolean {
+    // Return false for compatibility - new service handles retries internally
+    return false;
+  }
+
+  public resetConnection(): void {
+    this.disconnect();
+  }
 }
 
-// Export singleton instance
-const printerService = PrinterService.getInstance();
+// Create singleton instance
+let printerServiceInstance: PrinterService | null = null;
 
-export default printerService;
+export const getPrinterService = (): PrinterService => {
+  if (!printerServiceInstance) {
+    printerServiceInstance = new PrinterService();
+  }
+  return printerServiceInstance;
+};
+
+// Create a singleton instance for direct export (backward compatibility)
+const printerServiceSingleton = getPrinterService();
+
+export default printerServiceSingleton;
