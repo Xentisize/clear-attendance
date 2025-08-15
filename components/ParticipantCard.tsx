@@ -3,14 +3,14 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
 } from '@/components/ui/card';
 import { Spinner } from '@/components/ui/spinner';
-import printerService from '@/utils/printerService';
+import { usePrinter } from '@/contexts/PrinterContext';
 import { createClient } from '@/utils/supabase/client';
 import { QRCodeSVG } from 'qrcode.react';
 import { useState } from 'react';
@@ -46,9 +46,17 @@ export default function ParticipantCard({
 	className = '',
 }: ParticipantCardProps) {
 	const [printing, setPrinting] = useState(false);
+	const { printParticipantBadge, isConnected, isSdkInitialized, selectedPrinter } = usePrinter();
 
 	const handlePrint = async () => {
 		if (!participant) return;
+		
+		// Check if printer is ready
+		if (!isConnected || !isSdkInitialized || !selectedPrinter) {
+			alert('Printer not ready. Please check the printer connection in the admin panel.');
+			return;
+		}
+
 		setPrinting(true);
 		try {
 			const supabase = await createClient();
@@ -63,13 +71,19 @@ export default function ParticipantCard({
 
 			// Try to print the label
 			try {
-				// biome-ignore lint/suspicious/noExplicitAny: Printer service has dynamic typing
-				await (printerService as any).printParticipantLabel(participant);
+				// Map participant data to the format expected by the printer service
+				const participantData = {
+					name: `${participant.title} ${participant.first_name} ${participant.last_name}`.trim(),
+					id: participant.staff_id,
+					department: participant.department || 'N/A'
+				};
+
+				await printParticipantBadge(participantData);
 				alert('Label printed successfully!');
 			} catch (printError) {
 				console.error('Print error:', printError);
 				alert(
-					`Attendance marked successfully, but printing failed: ${printError instanceof Error ? printError.message : 'Unknown error'}. Please ensure the printer service is running and a printer is connected.`,
+					`Attendance marked successfully, but printing failed: ${printError instanceof Error ? printError.message : 'Unknown error'}. Please check the printer connection in the admin panel.`,
 				);
 			}
 

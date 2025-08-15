@@ -4,8 +4,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { usePrinter } from '@/contexts/PrinterContext';
 import { cn } from '@/lib/utils';
-import printerService from '@/utils/printerService';
 import { createClient } from '@/utils/supabase/client';
 import {
 	AlertCircle,
@@ -19,34 +19,15 @@ import {
 	WifiOff,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 interface PrinterDevice {
 	name: string;
 	port: number;
 }
 
-interface PrinterStatus {
-	isConnected: boolean;
-	isSdkInitialized: boolean;
-	selectedPrinter: string | null;
-	availablePrinters: PrinterDevice[];
-	retryCount?: number;
-	maxRetriesReached?: boolean;
-}
-
 export default function PrinterManagement() {
 	const [loading, setLoading] = useState(true);
-	const [printerStatus, setPrinterStatus] = useState<PrinterStatus>({
-		isConnected: false,
-		isSdkInitialized: false,
-		selectedPrinter: null,
-		availablePrinters: [] as PrinterDevice[],
-		retryCount: 0,
-		maxRetriesReached: false,
-	});
-	const [isInitializing, setIsInitializing] = useState(false);
-	const [isRefreshingPrinters, setIsRefreshingPrinters] = useState(false);
 	const [testPrintLoading, setTestPrintLoading] = useState(false);
 	const [message, setMessage] = useState<{
 		type: 'success' | 'error' | 'info';
@@ -54,27 +35,19 @@ export default function PrinterManagement() {
 	} | null>(null);
 	const router = useRouter();
 
-	const checkPrinterStatus = useCallback(async () => {
-		const status: PrinterStatus = {
-			isConnected: printerService.isConnectedService(),
-			isSdkInitialized: printerService.isSdkInitializedService(),
-			selectedPrinter: printerService.getSelectedPrinter(),
-			availablePrinters: [],
-			retryCount: printerService.getRetryCount(),
-			maxRetriesReached: printerService.isMaxRetriesReached(),
-		};
-
-		if (status.isConnected) {
-			try {
-				const printers = await printerService.getPrinters();
-				status.availablePrinters = printers as PrinterDevice[];
-			} catch (error) {
-				console.error('Error getting printers:', error);
-			}
-		}
-
-		setPrinterStatus(status);
-	}, []);
+	// Use printer context instead of managing state locally
+	const {
+		isConnected,
+		isSdkInitialized,
+		selectedPrinter,
+		availablePrinters,
+		isInitializing,
+		initializationError,
+		refreshPrinters,
+		selectPrinter,
+		reinitialize,
+		printParticipantBadge,
+	} = usePrinter();
 
 	useEffect(() => {
 		const checkUser = async () => {
@@ -108,148 +81,69 @@ export default function PrinterManagement() {
 		checkUser();
 	}, [router]);
 
+	// Show initialization error if any
 	useEffect(() => {
-		// Check printer status on component mount
-		const checkStatus = async () => {
-			await checkPrinterStatus();
-		};
-		checkStatus();
-	}, [checkPrinterStatus]);
-
-	const initializePrinter = async () => {
-		setIsInitializing(true);
-		setMessage(null);
-
-		try {
-			// Initialize service
-			const serviceConnected = await printerService.initialize();
-			if (!serviceConnected) {
-				setMessage({
-					type: 'error',
-					text: 'Failed to connect to printer service. Please ensure the printer plugin is installed and running.',
-				});
-				setIsInitializing(false);
-				return;
-			}
-
-			// Initialize SDK
-			const sdkInitialized = await printerService.initializeSdk();
-			if (!sdkInitialized) {
-				setMessage({
-					type: 'error',
-					text: 'Failed to initialize printer SDK.',
-				});
-				setIsInitializing(false);
-				return;
-			}
-
-			setMessage({
-				type: 'success',
-				text: 'Printer service initialized successfully.',
-			});
-			await checkPrinterStatus();
-		} catch (error) {
-			console.error('Initialization error:', error);
+		if (initializationError) {
 			setMessage({
 				type: 'error',
-				text: 'An error occurred during initialization.',
+				text: initializationError,
 			});
-		} finally {
-			setIsInitializing(false);
 		}
-	};
+	}, [initializationError]);
 
-	const refreshPrinters = async () => {
-		setIsRefreshingPrinters(true);
+	const handleRefreshPrinters = async () => {
 		setMessage(null);
-
 		try {
-			const printers = await printerService.getPrinters();
-			setPrinterStatus((prev) => ({ ...prev, availablePrinters: printers }));
+			await refreshPrinters();
 			setMessage({
 				type: 'success',
-				text: `Found ${printers.length} printer(s).`,
+				text: `Found ${availablePrinters.length} printer(s).`,
 			});
 		} catch (error) {
 			console.error('Error refreshing printers:', error);
 			setMessage({ type: 'error', text: 'Failed to refresh printer list.' });
-		} finally {
-			setIsRefreshingPrinters(false);
 		}
 	};
 
-	const selectPrinter = async (printer: PrinterDevice) => {
+	const handleSelectPrinter = async (printer: PrinterDevice) => {
 		setMessage(null);
-
 		try {
-			// Check if service is still connected before selecting
-			if (!printerService.isConnectedService()) {
-				setMessage({
-					type: 'error',
-					text: 'Printer service disconnected. Please reinitialize.',
-				});
-				await checkPrinterStatus();
-				return;
-			}
-
-			const success = await printerService.selectPrinter(
-				printer.name,
-				printer.port,
-			);
+			const success = await selectPrinter(printer.name, printer.port);
 			if (success) {
 				setMessage({
 					type: 'success',
 					text: `Printer "${printer.name}" selected successfully.`,
 				});
-				// Update status without calling getPrinters() to avoid WebSocket overload
-				const status: PrinterStatus = {
-					isConnected: printerService.isConnectedService(),
-					isSdkInitialized: printerService.isSdkInitializedService(),
-					selectedPrinter: printerService.getSelectedPrinter(),
-					availablePrinters: printerStatus.availablePrinters, // Keep existing list
-					retryCount: printerService.getRetryCount(),
-					maxRetriesReached: printerService.isMaxRetriesReached(),
-				};
-				setPrinterStatus(status);
 			} else {
-				// Check if we should suggest reconnection
-				const retryCount = printerService.getRetryCount();
-				const maxReached = printerService.isMaxRetriesReached();
-
-				let errorMessage = `Failed to select printer "${printer.name}".`;
-				if (maxReached) {
-					errorMessage +=
-						' Maximum retry attempts reached. Please reinitialize the service.';
-				} else if (retryCount > 0) {
-					errorMessage += ` Retry attempt ${retryCount} failed.`;
-				}
-
 				setMessage({
 					type: 'error',
-					text: errorMessage,
+					text: `Failed to select printer "${printer.name}".`,
 				});
-				await checkPrinterStatus();
 			}
 		} catch (error) {
 			console.error('Error selecting printer:', error);
 			setMessage({
 				type: 'error',
-				text: 'An error occurred while selecting the printer. The connection may have been lost.',
+				text: 'An error occurred while selecting the printer.',
 			});
-			// Reset connection state if there's an error
-			printerService.resetConnection();
-			await checkPrinterStatus();
 		}
 	};
 
-	const resetConnection = async () => {
+	const handleReinitialize = async () => {
 		setMessage(null);
-		printerService.resetConnection();
-		setMessage({
-			type: 'info',
-			text: 'Connection reset. Please reinitialize the printer service.',
-		});
-		await checkPrinterStatus();
+		try {
+			await reinitialize();
+			setMessage({
+				type: 'success',
+				text: 'Printer service reinitialized successfully.',
+			});
+		} catch (error) {
+			console.error('Error reinitializing:', error);
+			setMessage({
+				type: 'error',
+				text: 'Failed to reinitialize printer service.',
+			});
+		}
 	};
 
 	const testPrint = async () => {
@@ -259,30 +153,21 @@ export default function PrinterManagement() {
 		try {
 			// Create test participant data
 			const testParticipant = {
-				id: 'test-001',
-				title: 'Mr.',
-				first_name: 'Test',
-				last_name: 'User',
-				staff_id: 'EMP001',
-				department: 'IT Department',
-				post: 'Software Engineer',
+				name: 'Test User',
+				id: 'TEST001',
+				department: 'IT Department'
 			};
 
-			const success =
-				await printerService.printParticipantLabel(testParticipant);
-			if (success) {
-				setMessage({
-					type: 'success',
-					text: 'Test label printed successfully.',
-				});
-			} else {
-				setMessage({ type: 'error', text: 'Failed to print test label.' });
-			}
+			await printParticipantBadge(testParticipant);
+			setMessage({
+				type: 'success',
+				text: 'Test label printed successfully.',
+			});
 		} catch (error) {
 			console.error('Test print error:', error);
 			setMessage({
 				type: 'error',
-				text: 'An error occurred during test printing.',
+				text: `Test print failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
 			});
 		} finally {
 			setTestPrintLoading(false);
@@ -339,7 +224,7 @@ export default function PrinterManagement() {
 							<CardContent>
 								<div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 									<div className="flex items-center">
-										{printerStatus.isConnected ? (
+										{isConnected ? (
 											<Wifi className="h-4 w-4 text-green-500 mr-3" />
 										) : (
 											<WifiOff className="h-4 w-4 text-red-500 mr-3" />
@@ -350,26 +235,23 @@ export default function PrinterManagement() {
 											</div>
 											<Badge
 												variant={
-													printerStatus.isConnected ? 'default' : 'destructive'
+													isConnected ? 'default' : 'destructive'
 												}
 												className="mt-1"
 											>
-												{printerStatus.isConnected
+												{isConnected
 													? 'Connected'
 													: 'Disconnected'}
 											</Badge>
-											{((printerStatus.retryCount ?? 0) > 0 ||
-												printerStatus.maxRetriesReached) && (
-												<div className="text-xs text-orange-600 mt-1">
-													{printerStatus.maxRetriesReached
-														? 'Max retries reached'
-														: `Retries: ${printerStatus.retryCount ?? 0}`}
+											{isInitializing && (
+												<div className="text-xs text-blue-600 mt-1">
+													Initializing...
 												</div>
 											)}
 										</div>
 									</div>
 									<div className="flex items-center">
-										{printerStatus.isSdkInitialized ? (
+										{isSdkInitialized ? (
 											<CheckCircle2 className="h-4 w-4 text-green-500 mr-3" />
 										) : (
 											<AlertCircle className="h-4 w-4 text-red-500 mr-3" />
@@ -380,20 +262,20 @@ export default function PrinterManagement() {
 											</div>
 											<Badge
 												variant={
-													printerStatus.isSdkInitialized
+													isSdkInitialized
 														? 'default'
 														: 'destructive'
 												}
 												className="mt-1"
 											>
-												{printerStatus.isSdkInitialized
+												{isSdkInitialized
 													? 'Initialized'
 													: 'Not Initialized'}
 											</Badge>
 										</div>
 									</div>
 									<div className="flex items-center">
-										{printerStatus.selectedPrinter ? (
+										{selectedPrinter ? (
 											<Printer className="h-4 w-4 text-green-500 mr-3" />
 										) : (
 											<Printer className="h-4 w-4 text-gray-400 mr-3" />
@@ -404,11 +286,11 @@ export default function PrinterManagement() {
 											</div>
 											<Badge
 												variant={
-													printerStatus.selectedPrinter ? 'default' : 'outline'
+													selectedPrinter ? 'default' : 'outline'
 												}
 												className="mt-1"
 											>
-												{printerStatus.selectedPrinter || 'None'}
+												{selectedPrinter || 'None'}
 											</Badge>
 										</div>
 									</div>
@@ -424,7 +306,7 @@ export default function PrinterManagement() {
 							<CardContent>
 								<div className="flex flex-wrap gap-4">
 									<Button
-										onClick={initializePrinter}
+										onClick={handleReinitialize}
 										disabled={isInitializing}
 										className="flex items-center gap-2"
 									>
@@ -435,32 +317,24 @@ export default function PrinterManagement() {
 										)}
 										{isInitializing
 											? 'Initializing...'
-											: 'Initialize Printer Service'}
+											: 'Reinitialize Printer Service'}
 									</Button>
 
 									<Button
 										variant="outline"
-										onClick={refreshPrinters}
-										disabled={
-											!printerStatus.isConnected || isRefreshingPrinters
-										}
+										onClick={handleRefreshPrinters}
+										disabled={!isConnected}
 										className="flex items-center gap-2"
 									>
-										{isRefreshingPrinters ? (
-											<Loader2 className="h-4 w-4 animate-spin" />
-										) : (
-											<RefreshCw className="h-4 w-4" />
-										)}
-										{isRefreshingPrinters
-											? 'Refreshing...'
-											: 'Refresh Printers'}
+										<RefreshCw className="h-4 w-4" />
+										Refresh Printers
 									</Button>
 
 									<Button
 										variant="default"
 										onClick={testPrint}
 										disabled={
-											!printerStatus.selectedPrinter || testPrintLoading
+											!selectedPrinter || testPrintLoading
 										}
 										className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
 									>
@@ -471,27 +345,6 @@ export default function PrinterManagement() {
 										)}
 										{testPrintLoading ? 'Printing...' : 'Test Print'}
 									</Button>
-
-									<Button
-										variant="outline"
-										onClick={checkPrinterStatus}
-										className="flex items-center gap-2"
-									>
-										<RefreshCw className="h-4 w-4" />
-										Refresh Status
-									</Button>
-
-									{((printerStatus.retryCount ?? 0) > 0 ||
-										printerStatus.maxRetriesReached) && (
-										<Button
-											variant="outline"
-											onClick={resetConnection}
-											className="flex items-center gap-2 border-orange-500 text-orange-600 hover:bg-orange-50"
-										>
-											<WifiOff className="h-4 w-4" />
-											Reset Connection
-										</Button>
-									)}
 								</div>
 							</CardContent>
 						</Card>
@@ -505,24 +358,24 @@ export default function PrinterManagement() {
 								</CardTitle>
 							</CardHeader>
 							<CardContent>
-								{printerStatus.availablePrinters.length === 0 ? (
+								{availablePrinters.length === 0 ? (
 									<div className="text-center py-8">
 										<Printer className="mx-auto h-12 w-12 text-gray-400 mb-4" />
 										<div className="text-gray-500 mb-2">No printers found</div>
 										<div className="text-sm text-gray-400">
-											{!printerStatus.isConnected
+											{!isConnected
 												? 'Please initialize the printer service first.'
 												: 'Click "Refresh Printers" to scan for available printers.'}
 										</div>
 									</div>
 								) : (
 									<div className="space-y-3">
-										{printerStatus.availablePrinters.map((printer) => (
+										{availablePrinters.map((printer: PrinterDevice) => (
 											<Card
 												key={`${printer.name}-${printer.port}`}
 												className={cn(
 													'p-4 transition-colors cursor-pointer',
-													printerStatus.selectedPrinter === printer.name
+													selectedPrinter === printer.name
 														? 'border-primary bg-primary/5'
 														: 'hover:bg-gray-50',
 												)}
@@ -532,7 +385,7 @@ export default function PrinterManagement() {
 														<Printer
 															className={cn(
 																'h-4 w-4 mr-3',
-																printerStatus.selectedPrinter === printer.name
+																selectedPrinter === printer.name
 																	? 'text-primary'
 																	: 'text-gray-400',
 															)}
@@ -547,13 +400,13 @@ export default function PrinterManagement() {
 														</div>
 													</div>
 													<div>
-														{printerStatus.selectedPrinter === printer.name ? (
+														{selectedPrinter === printer.name ? (
 															<Badge variant="default">Selected</Badge>
 														) : (
 															<Button
 																variant="outline"
 																size="sm"
-																onClick={() => selectPrinter(printer)}
+																onClick={() => handleSelectPrinter(printer)}
 															>
 																Select
 															</Button>

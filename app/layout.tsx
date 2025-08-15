@@ -1,4 +1,5 @@
 import Navigation from '@/components/navigation';
+import { PrinterProvider } from '@/contexts/PrinterContext';
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
@@ -29,8 +30,10 @@ export default function RootLayout({
 				className={`${geistSans.variable} ${geistMono.variable} antialiased`}
 			>
 				<script src="/js/jcPrinterSdk_api_third.js" async></script>
-				<Navigation />
-				{children}
+				<PrinterProvider>
+					<Navigation />
+					{children}
+				</PrinterProvider>
 			</body>
 		</html>
 	);
