@@ -6,6 +6,25 @@
  * message routing, and print listener patterns.
  */
 
+interface PrintSettings {
+  paperWidth: number;
+  paperHeight: number;
+  eventFontSize: number;
+  nameFontSize: number;
+  positionFontSize: number;
+  departmentFontSize: number;
+  fontFamily: string;
+  showEventName: boolean;
+  eventName: string;
+  showNamePrefix: boolean;
+  namePrefix: string;
+  showPositionPrefix: boolean;
+  positionPrefix: string;
+  showDepartmentPrefix: boolean;
+  departmentPrefix: string;
+  lineSpacing: number;
+}
+
 interface SocketOptions {
   resetTime: number;
   timeout: number;
@@ -512,6 +531,95 @@ class PrinterService {
   }
 
   /**
+   * Print participant badge with custom settings
+   */
+  public async printParticipantBadgeWithSettings(
+    participantData: {
+      title?: string;
+      firstName: string;
+      lastName: string;
+      position: string;
+      department: string;
+    },
+    settings: PrintSettings
+  ): Promise<boolean> {
+    if (!this.isReady()) {
+      throw new Error('Printer not ready. Please connect, initialize SDK, and select a printer first.');
+    }
+
+    console.log('🖨️ Starting participant badge print with custom settings...');
+    
+    try {
+      // Set up print listener
+      let printListener: ((msg: any) => void) | null = null;
+      let isCompleted = false;
+      
+      const printPromise = new Promise<boolean>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          if (!isCompleted) {
+            console.warn('⏰ Print job timeout');
+            cleanup();
+            resolve(false);
+          }
+        }, 30000);
+
+        const cleanup = () => {
+          if (printListener) {
+            this.socket.removePrintListener(printListener);
+            printListener = null;
+          }
+          clearTimeout(timeout);
+        };
+
+        printListener = this.socket.addPrintListener(async (msg) => {
+          const resultAck = msg?.resultAck;
+          console.log('📨 Print listener received:', resultAck);
+
+          if (resultAck?.errorCode === 0 && resultAck?.info === 'commitJob ok!') {
+            console.log('✅ Commit job successful');
+          }
+
+          // Check completion
+          if (resultAck?.printCopies >= 1 && resultAck?.printPages >= 1) {
+            console.log('🏁 Print job complete, ending job...');
+            try {
+              if (this.socket.getStatus() === WebSocket.OPEN) {
+                await this.socket.send({ apiName: 'endJob' });
+                console.log('✅ Print job ended successfully');
+              }
+              isCompleted = true;
+              cleanup();
+              resolve(true);
+            } catch (error) {
+              console.error('❌ Error ending job:', error);
+              isCompleted = true;
+              cleanup();
+              resolve(false);
+            }
+          }
+
+          if (resultAck?.errorCode !== 0) {
+            console.error('❌ Print error:', resultAck?.info);
+            cleanup();
+            reject(new Error(resultAck?.info || 'Print failed'));
+          }
+        });
+
+        // Start the print process with custom settings
+        this.executePrintJobWithSettings(participantData, settings).catch(reject);
+      });
+
+      const result = await printPromise;
+      console.log(`🖨️ Print job ${result ? 'completed successfully' : 'failed'}`);
+      return result;
+
+    } catch (error) {
+      console.error('❌ Print job failed:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Execute the actual print job
    */
   private async executePrintJob(participantData: {
@@ -550,11 +658,19 @@ class PrinterService {
       throw new Error('Failed to initialize drawing board');
     }
 
-    // Step 3: Draw text elements
+    // Step 3: Draw text elements with proper vertical centering
+    const paperHeight = 25; // 25mm standard label height
+    const lineHeights = [6, 4, 4]; // Heights for each line
+    const totalContentHeight = lineHeights.reduce((sum, height) => sum + height, 0);
+    const verticalCenterOffset = (paperHeight - totalContentHeight) / 2;
+    const baseY = Math.max(2, verticalCenterOffset);
+    
+    console.log(`📐 Standard print vertical centering: Paper height=${paperHeight}mm, Total content=${totalContentHeight}mm, Base Y=${baseY}mm`);
+    
     const textElements = [
       {
         x: 2,
-        y: 2,
+        y: baseY,
         height: 6,
         width: 50,
         value: participantData.name,
@@ -567,7 +683,7 @@ class PrinterService {
       },
       {
         x: 2,
-        y: 9,
+        y: baseY + 6,
         height: 4,
         width: 50,
         value: `ID: ${participantData.id}`,
@@ -580,7 +696,7 @@ class PrinterService {
       },
       {
         x: 2,
-        y: 15,
+        y: baseY + 6 + 4,
         height: 4,
         width: 50,
         value: participantData.department,
@@ -602,6 +718,183 @@ class PrinterService {
 
     // Step 4: Commit job (exactly like pc-react demo)
     console.log('📤 Committing print job...');
+    await this.socket.send({
+      apiName: "commitJob",
+      parameter: {
+        printData: undefined, // Exactly like pc-react demo
+        printerImageProcessingInfo: this.jsonObj.printerImageProcessingInfo, // Not JSON string
+      },
+    });
+  }
+
+  /**
+   * Execute the actual print job with custom settings
+   */
+  private async executePrintJobWithSettings(
+    participantData: {
+      title?: string;
+      firstName: string;
+      lastName: string;
+      position: string;
+      department: string;
+    },
+    settings: PrintSettings
+  ): Promise<void> {
+    console.log('🎯 Executing print job with custom settings...');
+
+    // Step 1: Start print job
+    const startResponse = await this.socket.send({
+      apiName: "startJob",
+      parameter: {
+        printDensity: this.density,
+        printLabelType: this.labelType,
+        printMode: this.printMode,
+        count: this.jsonObj.printerImageProcessingInfo.printQuantity,
+      },
+    });
+
+    if (startResponse.resultAck.errorCode !== 0) {
+      throw new Error('Failed to start print job');
+    }
+
+    // Step 2: Initialize drawing board with custom dimensions
+    const canvasSuccess = await this.initDrawingBoard({
+      width: settings.paperWidth,
+      height: settings.paperHeight,
+      rotate: 0,
+      path: "",
+      verticalShift: 0,
+      HorizontalShift: 0
+    });
+
+    if (!canvasSuccess) {
+      throw new Error('Failed to initialize drawing board');
+    }
+
+    // Step 3: Draw text elements with custom settings
+    // Layout: Event Name (top) + Divider + Centered participant info
+    const alignment = 1; // Center alignment
+    
+    // Calculate content dimensions
+    const eventLineHeight = settings.showEventName ? settings.eventFontSize * settings.lineSpacing : 0;
+    const dividerHeight = settings.showEventName ? 2 : 0; // Space for divider line
+    const nameLineHeight = settings.nameFontSize * settings.lineSpacing;
+    const positionLineHeight = settings.positionFontSize * settings.lineSpacing;
+    const departmentLineHeight = settings.departmentFontSize * settings.lineSpacing;
+    
+    // Calculate spacing
+    const eventSection = eventLineHeight + dividerHeight;
+    const participantContentHeight = nameLineHeight + positionLineHeight + departmentLineHeight;
+    const remainingHeight = settings.paperHeight - eventSection;
+    const participantCenterOffset = eventSection + (remainingHeight - participantContentHeight) / 2;
+    
+    let currentY = 2; // Start with top margin
+    
+    console.log(`📐 Layout: Event section=${eventSection}mm, Participant content=${participantContentHeight}mm, Participant start=${participantCenterOffset}mm`);
+
+    // Build the full name
+    const fullName = [
+      participantData.title,
+      participantData.firstName,
+      participantData.lastName
+    ].filter(Boolean).join(' ');
+
+    const textElements = [];
+    
+    // Event name at the top (if enabled)
+    if (settings.showEventName) {
+      textElements.push({
+        x: 2,
+        y: currentY,
+        height: settings.eventFontSize,
+        width: settings.paperWidth - 4,
+        value: settings.eventName,
+        fontSize: settings.eventFontSize * 0.8,
+        rotate: 0,
+        textAlignHorizonral: alignment,
+        textAlignVertical: 1,
+        lineMode: 6,
+        fontStyle: 0
+      });
+      currentY += eventLineHeight;
+      
+      // Add divider line
+      textElements.push({
+        x: settings.paperWidth * 0.2, // 20% from left
+        y: currentY,
+        height: 0.5,
+        width: settings.paperWidth * 0.6, // 60% width
+        value: '─'.repeat(20), // Divider line
+        fontSize: 1,
+        rotate: 0,
+        textAlignHorizonral: alignment,
+        textAlignVertical: 1,
+        lineMode: 6,
+        fontStyle: 0
+      });
+      currentY = participantCenterOffset; // Jump to centered position for participant info
+    } else {
+      // If no event name, center all participant content
+      const totalContentHeight = participantContentHeight;
+      const verticalCenterOffset = (settings.paperHeight - totalContentHeight) / 2;
+      currentY = Math.max(2, verticalCenterOffset);
+    }
+
+    // Participant information (centered in remaining space)
+    textElements.push(
+      // Name field
+      {
+        x: 2,
+        y: currentY,
+        height: settings.nameFontSize,
+        width: settings.paperWidth - 4,
+        value: settings.showNamePrefix ? `${settings.namePrefix}${fullName}` : fullName,
+        fontSize: settings.nameFontSize * 0.8,
+        rotate: 0,
+        textAlignHorizonral: alignment,
+        textAlignVertical: 1,
+        lineMode: 6,
+        fontStyle: 1 // Bold for name
+      },
+      // Position field
+      {
+        x: 2,
+        y: currentY + nameLineHeight,
+        height: settings.positionFontSize,
+        width: settings.paperWidth - 4,
+        value: settings.showPositionPrefix ? `${settings.positionPrefix}${participantData.position}` : participantData.position,
+        fontSize: settings.positionFontSize * 0.8,
+        rotate: 0,
+        textAlignHorizonral: alignment,
+        textAlignVertical: 1,
+        lineMode: 6,
+        fontStyle: 0
+      },
+      // Department field
+      {
+        x: 2,
+        y: currentY + nameLineHeight + positionLineHeight,
+        height: settings.departmentFontSize,
+        width: settings.paperWidth - 4,
+        value: settings.showDepartmentPrefix ? `${settings.departmentPrefix}${participantData.department}` : participantData.department,
+        fontSize: settings.departmentFontSize * 0.8,
+        rotate: 0,
+        textAlignHorizonral: alignment,
+        textAlignVertical: 1,
+        lineMode: 6,
+        fontStyle: 0
+      }
+    );
+
+    for (const element of textElements) {
+      const success = await this.drawLabelText(element);
+      if (!success) {
+        throw new Error('Failed to draw text element');
+      }
+    }
+
+    // Step 4: Commit job (exactly like pc-react demo)
+    console.log('📤 Committing print job with custom settings...');
     await this.socket.send({
       apiName: "commitJob",
       parameter: {

@@ -37,6 +37,97 @@ interface ParticipantCardProps {
 	className?: string;
 }
 
+interface LabelPreviewProps {
+	participant: Participant;
+}
+
+// Label Preview Component that matches actual print output
+function LabelPreview({ participant }: LabelPreviewProps) {
+	const { printSettings } = usePrinter();
+	
+	return (
+		<div className="flex justify-center">
+			<div 
+				className="border-2 border-gray-300 bg-white relative"
+				style={{
+					width: `${printSettings.paperWidth * 3}px`, // Scale for visibility
+					height: `${printSettings.paperHeight * 3}px`,
+					minWidth: '180px',
+					minHeight: '90px'
+				}}
+			>
+				{/* Event name at top (if enabled) */}
+				{printSettings.showEventName && (
+					<>
+						<div 
+							className="absolute w-full text-center"
+							style={{
+								top: '6px',
+								fontSize: `${printSettings.eventFontSize * 0.8}px`, // Slightly smaller for preview
+								lineHeight: printSettings.lineSpacing,
+								fontFamily: printSettings.fontFamily
+							}}
+						>
+							{printSettings.eventName}
+						</div>
+						{/* Divider line */}
+						<div 
+							className="absolute border-t border-gray-400"
+							style={{
+								top: `${6 + printSettings.eventFontSize * printSettings.lineSpacing * 3}px`,
+								left: '20%',
+								width: '60%'
+							}}
+						></div>
+					</>
+				)}
+				
+				{/* Participant info centered in remaining space */}
+				<div 
+					className="absolute w-full flex items-center justify-center"
+					style={{
+						top: printSettings.showEventName 
+							? `${15 + printSettings.eventFontSize * printSettings.lineSpacing * 3}px`
+							: '0',
+						bottom: '0',
+						left: '0',
+						right: '0'
+					}}
+				>
+					<div className="text-center space-y-1">
+						<div style={{
+							fontSize: `${printSettings.nameFontSize * 0.8}px`, // Slightly smaller for preview
+							fontWeight: 'bold', 
+							lineHeight: printSettings.lineSpacing,
+							fontFamily: printSettings.fontFamily
+						}}>
+							{printSettings.showNamePrefix ? printSettings.namePrefix : ''}{participant.title} {participant.first_name} {participant.last_name}
+						</div>
+						<div style={{
+							fontSize: `${printSettings.positionFontSize * 0.8}px`, 
+							lineHeight: printSettings.lineSpacing,
+							fontFamily: printSettings.fontFamily
+						}}>
+							{printSettings.showPositionPrefix ? printSettings.positionPrefix : ''}{participant.post || 'N/A'}
+						</div>
+						<div style={{
+							fontSize: `${printSettings.departmentFontSize * 0.8}px`, 
+							lineHeight: printSettings.lineSpacing,
+							fontFamily: printSettings.fontFamily
+						}}>
+							{printSettings.showDepartmentPrefix ? printSettings.departmentPrefix : ''}{participant.department || 'N/A'}
+						</div>
+					</div>
+				</div>
+			</div>
+			<div className="ml-4 text-xs text-gray-500 self-end">
+				<div>Size: {printSettings.paperWidth}mm × {printSettings.paperHeight}mm</div>
+				<div>Layout: {printSettings.showEventName ? 'Event + Centered' : 'Centered only'}</div>
+			</div>
+		</div>
+	);
+}
+
 export default function ParticipantCard({
 	participant,
 	onAttendanceUpdate,
@@ -73,8 +164,10 @@ export default function ParticipantCard({
 			try {
 				// Map participant data to the format expected by the printer service
 				const participantData = {
-					name: `${participant.title} ${participant.first_name} ${participant.last_name}`.trim(),
-					id: participant.staff_id,
+					title: participant.title,
+					firstName: participant.first_name,
+					lastName: participant.last_name,
+					position: participant.post || 'N/A',
 					department: participant.department || 'N/A'
 				};
 
@@ -292,63 +385,11 @@ export default function ParticipantCard({
 							Label Preview
 						</CardTitle>
 						<CardDescription>
-							This is how your name tag will appear when printed
+							This is how your name tag will appear when printed (using current printer settings)
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<div className="flex justify-center">
-							<div className="bg-white border-2 border-gray-300 rounded-lg p-6 shadow-lg max-w-md w-full">
-								{/* Label Content */}
-								<div className="text-center space-y-4">
-									{/* Header */}
-									<div className="border-b-2 border-gray-200 pb-3">
-										<h2 className="text-sm font-bold text-gray-600 uppercase tracking-wide">
-											Event Badge
-										</h2>
-									</div>
-
-									{/* Name */}
-									<div>
-										<h1 className="text-xl font-bold text-gray-900">
-											{participant.title} {participant.first_name}{' '}
-											{participant.last_name}
-										</h1>
-										{participant.post && (
-											<p className="text-sm text-gray-600 mt-1">
-												{participant.post}
-											</p>
-										)}
-										{participant.department && (
-											<p className="text-xs text-gray-500">
-												{participant.department}
-											</p>
-										)}
-									</div>
-
-									{/* QR Code */}
-									<div className="flex justify-center">
-										<div className="bg-gray-50 p-3 rounded">
-											<QRCodeSVG
-												value={participant.id}
-												size={80}
-												level="H"
-												includeMargin={false}
-											/>
-										</div>
-									</div>
-
-									{/* Staff ID */}
-									<div className="border-t border-gray-200 pt-3">
-										<p className="text-xs font-mono text-gray-500">
-											ID: {participant.staff_id}
-										</p>
-									</div>
-								</div>
-							</div>
-						</div>
-						<p className="text-center text-sm text-gray-500 mt-4">
-							* Actual size may vary depending on printer settings
-						</p>
+						<LabelPreview participant={participant} />
 					</CardContent>
 				</Card>
 			)}

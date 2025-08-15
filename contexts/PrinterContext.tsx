@@ -3,6 +3,29 @@
 import { getPrinterService } from '@/utils/printerService';
 import { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 
+interface PrintSettings {
+  // Paper dimensions (in mm)
+  paperWidth: number;
+  paperHeight: number;
+  // Font settings for each field
+  eventFontSize: number;
+  nameFontSize: number;
+  positionFontSize: number;
+  departmentFontSize: number;
+  fontFamily: string;
+  // Text content templates and toggles
+  showEventName: boolean;
+  eventName: string;
+  showNamePrefix: boolean;
+  namePrefix: string;
+  showPositionPrefix: boolean;
+  positionPrefix: string;
+  showDepartmentPrefix: boolean;
+  departmentPrefix: string;
+  // Layout settings (text will be centered by default)
+  lineSpacing: number;
+}
+
 interface PrinterContextType {
   isConnected: boolean;
   isSdkInitialized: boolean;
@@ -11,15 +34,21 @@ interface PrinterContextType {
   isInitializing: boolean;
   initializationError: string | null;
   
+  // Print settings
+  printSettings: PrintSettings;
+  
   // Actions
   refreshPrinters: () => Promise<void>;
   selectPrinter: (printerName: string, port: number) => Promise<boolean>;
   reinitialize: () => Promise<void>;
+  updatePrintSettings: (newSettings: Partial<PrintSettings>) => void;
   
   // Print function
   printParticipantBadge: (participant: {
-    name: string;
-    id: string;
+    title?: string;
+    firstName: string;
+    lastName: string;
+    position: string;
     department: string;
   }) => Promise<boolean>;
 }
@@ -38,6 +67,30 @@ interface PrinterProviderProps {
   children: ReactNode;
 }
 
+// Default print settings
+const defaultPrintSettings: PrintSettings = {
+  // Paper dimensions (50mm x 30mm by default)
+  paperWidth: 50,
+  paperHeight: 30,
+  // Font settings for each field
+  eventFontSize: 8,
+  nameFontSize: 12,
+  positionFontSize: 10,
+  departmentFontSize: 8,
+  fontFamily: 'Arial',
+  // Text content templates and toggles
+  showEventName: true,
+  eventName: 'Company Event 2025',
+  showNamePrefix: false,
+  namePrefix: 'Name: ',
+  showPositionPrefix: false,
+  positionPrefix: 'Position: ',
+  showDepartmentPrefix: false,
+  departmentPrefix: 'Dept: ',
+  // Layout settings
+  lineSpacing: 2,
+};
+
 export function PrinterProvider({ children }: PrinterProviderProps) {
   const [isConnected, setIsConnected] = useState(false);
   const [isSdkInitialized, setIsSdkInitialized] = useState(false);
@@ -45,6 +98,7 @@ export function PrinterProvider({ children }: PrinterProviderProps) {
   const [availablePrinters, setAvailablePrinters] = useState<Array<{name: string; port: number; status: string}>>([]);
   const [isInitializing, setIsInitializing] = useState(false);
   const [initializationError, setInitializationError] = useState<string | null>(null);
+  const [printSettings, setPrintSettings] = useState<PrintSettings>(defaultPrintSettings);
 
   const printerService = getPrinterService();
 
@@ -141,17 +195,39 @@ export function PrinterProvider({ children }: PrinterProviderProps) {
   };
 
   const printParticipantBadge = async (participant: {
-    name: string;
-    id: string;
+    title?: string;
+    firstName: string;
+    lastName: string;
+    position: string;
     department: string;
   }): Promise<boolean> => {
     try {
-      return await printerService.printParticipantBadge(participant);
+      // Pass current print settings to the service
+      return await printerService.printParticipantBadgeWithSettings(participant, printSettings);
     } catch (error) {
       console.error('Print error:', error);
       throw error;
     }
   };
+
+  const updatePrintSettings = (newSettings: Partial<PrintSettings>) => {
+    setPrintSettings(prev => ({ ...prev, ...newSettings }));
+    // Optionally save to localStorage for persistence
+    localStorage.setItem('printerSettings', JSON.stringify({ ...printSettings, ...newSettings }));
+  };
+
+  // Load print settings from localStorage on mount
+  useEffect(() => {
+    const savedSettings = localStorage.getItem('printerSettings');
+    if (savedSettings) {
+      try {
+        const parsed = JSON.parse(savedSettings);
+        setPrintSettings(prev => ({ ...prev, ...parsed }));
+      } catch (error) {
+        console.error('Error loading saved print settings:', error);
+      }
+    }
+  }, []);
 
   // Initialize printer service when component mounts
   useEffect(() => {
@@ -181,9 +257,11 @@ export function PrinterProvider({ children }: PrinterProviderProps) {
     availablePrinters,
     isInitializing,
     initializationError,
+    printSettings,
     refreshPrinters,
     selectPrinter,
     reinitialize,
+    updatePrintSettings,
     printParticipantBadge,
   };
 

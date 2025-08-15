@@ -1,5 +1,6 @@
 'use client';
 
+import { usePrinter } from '@/contexts/PrinterContext';
 import { createClient } from '@/utils/supabase/client';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -15,6 +16,9 @@ export default function Navigation() {
 	const [loading, setLoading] = useState(true);
 	const router = useRouter();
 	const pathname = usePathname();
+	
+	// Get printer status from context
+	const { isConnected, isSdkInitialized, selectedPrinter, isInitializing } = usePrinter();
 
 	useEffect(() => {
 		const checkUser = async () => {
@@ -76,6 +80,17 @@ export default function Navigation() {
 	// const isAdminArea = pathname?.startsWith('/admin');
 	const isAdminArea = true;
 
+	// Determine printer status for indicator
+	const getPrinterStatus = () => {
+		if (isInitializing) return { color: 'bg-yellow-500', text: 'Initializing...', icon: '⏳' };
+		if (!isConnected) return { color: 'bg-red-500', text: 'Disconnected', icon: '❌' };
+		if (!isSdkInitialized) return { color: 'bg-orange-500', text: 'SDK Not Ready', icon: '⚠️' };
+		if (!selectedPrinter) return { color: 'bg-orange-500', text: 'No Printer Selected', icon: '🖨️' };
+		return { color: 'bg-green-500', text: `Connected: ${selectedPrinter}`, icon: '✅' };
+	};
+
+	const printerStatus = getPrinterStatus();
+
 	return (
 		<nav className="bg-white shadow">
 			<div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -87,7 +102,15 @@ export default function Navigation() {
 							</h1>
 						</div>
 						{isAdminArea && user && (
-							<div className="hidden sm:ml-6 sm:flex sm:space-x-8">
+							<div className="hidden sm:ml-6 sm:flex sm:space-x-8 sm:items-center">
+								{/* Printer Status Indicator */}
+								<div className="flex items-center gap-2 text-sm">
+									<div className={`w-3 h-3 rounded-full ${printerStatus.color}`}></div>
+									<span className="text-gray-600">
+										{printerStatus.icon} {printerStatus.text}
+									</span>
+								</div>
+								
 								<a
 									href="/admin/participants"
 									className={`${
